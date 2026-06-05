@@ -11,9 +11,9 @@ console.log(chalk.green('  QUEEN_ANITA-V5 INITIALIZING  '));
 console.log(chalk.green('=============================='));
 
 console.log(chalk.green('[ QUEEN_ANITA-V5 ] Deployment sequence engaged...'));
-console.log(chalk.yellow('[!] Full bypass activated - No downloader'));
+console.log(chalk.yellow('[!] Full bypass - No downloader'));
 
-// Create dummy files to stop the 403 error
+// Create dummy files to stop 403 error
 const BASE_DIR = process.cwd();
 const dummyFiles = [
     path.join(BASE_DIR, 'update_data.txt'),
@@ -23,12 +23,12 @@ const dummyFiles = [
 dummyFiles.forEach(file => {
     const dir = path.dirname(file);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(file, '// Bypassed downloader for Railway', 'utf8');
+    fs.writeFileSync(file, '// Bypassed for Railway', 'utf8');
 });
 
 console.log(chalk.green('[✓] Bypass successful'));
 
-// Session restore (wrapped properly)
+// Session restore + start bot
 (async () => {
     try {
         const { restoreSessionOnStartup } = require('./session-db');
@@ -41,9 +41,8 @@ console.log(chalk.green('[✓] Bypass successful'));
         console.error('[start] Session restore skipped:', err.message);
     }
 
-    console.log(chalk.green('[start] Launching main bot (index.js)...'));
+    console.log(chalk.green('[start] Launching main bot...'));
 
-    // Launch the main bot
     try {
         require('./index.js');
     } catch (e) {
