@@ -1,4 +1,4 @@
-FROM node:lts-buster
+FROM node:20-bookworm
 
   
 COPY package.json .
