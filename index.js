@@ -1,45 +1,61 @@
 'use strict';
 
+require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
 const chalk = require('chalk');
 
-const BASE_DIR = path.dirname(process.argv[1]);
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } =
+require('@whiskeysockets/baileys');
+
+const BASE_DIR = process.cwd();
+const SESSION_DIR = process.env.SESSION_DIR || path.join(BASE_DIR, 'session');
 
 console.log(chalk.green('=============================='));
-console.log(chalk.green('  QUEEN_ANITA-V5 INITIALIZING  '));
+console.log(chalk.green('  QUEEN_ANITA-V5 STARTING  '));
 console.log(chalk.green('=============================='));
 
-console.log(chalk.green('[ QUEEN_ANITA-V5 ] Deployment sequence engaged...'));
-console.log(chalk.yellow('[!] MeowTools Synchronization BYPASSED successfully (Railway Patch)'));
+async function startBot() {
+    try {
 
-// Create the files the bot expects
-const OUTPUT = {
-    updateData: path.join(BASE_DIR, 'update_data.txt'),
-    payload: path.join(BASE_DIR, 'payload.js')
-};
+        // ensure session folder exists
+        if (!fs.existsSync(SESSION_DIR)) {
+            fs.mkdirSync(SESSION_DIR, { recursive: true });
+        }
 
-function ensureDir(filePath) {
-    const dir = path.dirname(filePath);
-    if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
+        const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
+
+        const sock = makeWASocket({
+            auth: state,
+            printQRInTerminal: true
+        });
+
+        sock.ev.on('creds.update', saveCreds);
+
+        sock.ev.on('connection.update', (update) => {
+            const { connection, lastDisconnect } = update;
+
+            if (connection === 'open') {
+                console.log(chalk.green('🟢 QUEEN_ANITA-V5 IS ONLINE'));
+            }
+
+            if (connection === 'close') {
+                const reason = lastDisconnect?.error?.output?.statusCode;
+
+                console.log(chalk.red('🔴 CONNECTION CLOSED, RESTARTING...'));
+
+                // auto restart
+                if (reason !== DisconnectReason.loggedOut) {
+                    startBot();
+                }
+            }
+        });
+
+        console.log(chalk.yellow('[✓] Bot initializing...'));
+
+    } catch (err) {
+        console.error(chalk.red('BOT ERROR:'), err.message);
     }
 }
 
-ensureDir(OUTPUT.updateData);
-ensureDir(OUTPUT.payload);
-
-// Write dummy content so the bot continues
-fs.writeFileSync(OUTPUT.updateData, 'Sync bypassed for Railway deployment', 'utf8');
-fs.writeFileSync(OUTPUT.payload, `
-// === PATCHED PAYLOAD - MeowTools Sync Bypassed ===
-console.log(chalk.cyan('[✓] Queen Anita V5 - Synchronization OK'));
-module.exports = {
-    success: true,
-    synced: true,
-    message: "Railway patch applied"
-};
-`, 'utf8');
-
-console.log(chalk.green('[✓] Synchronization completed successfully (bypassed)'));
-console.log(chalk.green('[✓] All tasks completed. Proceeding to main bot...'));
+startBot();
