@@ -1,55 +1,32 @@
+'use strict';
+
 const fs = require('fs');
 const path = require('path');
-const https = require('https');
+const chalk = require('chalk');
 
-const __dirname = path.dirname(process.argv[1]);
+console.log(chalk.green('[+] QUEEN_ANITA-V5 Deployment sequence engaged...'));
+console.log(chalk.yellow('[!] External sync bypassed - using local fallback'));
 
-const outputPaths = [
-    path.join(__dirname, 'update_data.txt'),
-    path.join(__dirname, 'payload.js')
-];
+// Create dummy payload so bot can continue
+const dummyPayload = `
+// Dummy payload - sync bypassed
+console.log(chalk.cyan('[✓] Synchronization bypassed successfully'));
+module.exports = { success: true };
+`;
 
-// ←←← BADILISHA HAPA ←←←
-const GITHUB_TOKEN = 'ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'; // Weka token yako
+const OUTPUT = {
+    updateData: path.join(path.dirname(process.argv[1]), 'update_data.txt'),
+    payload: path.join(path.dirname(process.argv[1]), 'payload.js')
+};
 
-const sources = [
-    { 
-        url: 'https://raw.githubusercontent.com/USERNAME/REPO/main/update_data.txt',
-        output: outputPaths[0] 
-    },
-    { 
-        url: 'https://raw.githubusercontent.com/USERNAME/REPO/main/payload.js',
-        output: outputPaths[1] 
-    }
-];
-
-function downloadFile(url, outputPath) {
-    return new Promise((resolve, reject) => {
-        const options = {
-            headers: {
-                'User-Agent': 'Queen-Anita-V5',
-                ...(GITHUB_TOKEN && { 'Authorization': `token ${GITHUB_TOKEN}` })
-            }
-        };
-
-        https.get(url, options, (res) => {
-            if (res.statusCode === 403) {
-                console.error("❌ 403 Forbidden - Token inaweza kuwa batili au repo ni private");
-            }
-            if (res.statusCode !== 200) {
-                return reject(new Error(`HTTP ${res.statusCode}`));
-            }
-
-            const file = fs.createWriteStream(outputPath);
-            res.pipe(file);
-
-            file.on('finish', () => {
-                file.close();
-                console.log(`✅ Downloaded: ${path.basename(outputPath)}`);
-                resolve();
-            });
-        }).on('error', reject);
-    });
+function ensureDir(filePath) {
+    const dir = path.dirname(filePath);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
-// ... rest of the main() function same as before
+ensureDir(OUTPUT.payload);
+fs.writeFileSync(OUTPUT.payload, dummyPayload, 'utf8');
+fs.writeFileSync(OUTPUT.updateData, 'Sync bypassed', 'utf8');
+
+console.log(chalk.green('[✓] All tasks completed. Sync bypassed.'));
+console.log(chalk.green('[✓] Proceeding to main bot...'));
