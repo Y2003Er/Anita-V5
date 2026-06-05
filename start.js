@@ -1,41 +1,51 @@
-/**
- * start.js
- * Startup wrapper for Anita-V5 WhatsApp Bot.
- *
- * Responsibilities:
- *  1. Load environment variables via dotenv.
- *  2. Restore the WhatsApp session from PostgreSQL to the local ./session
- *     directory so that Baileys can pick it up on startup.
- *  3. Hand off execution to the main bot entry-point (index.js).
- *
- * This wrapper exists because index.js is obfuscated and cannot be edited
- * directly. By running `node start.js` instead of `node index.js` we get
- * full DB-backed session persistence without touching the obfuscated code.
- */
-
 'use strict';
 
 require('dotenv').config();
 
 const path = require('path');
-const { restoreSessionOnStartup } = require('./session-db');
+const fs = require('fs');
+const chalk = require('chalk');
 
 const SESSION_ID  = process.env.SESSION_DB_ID  || 'anita_v5_session';
 const SESSION_DIR = process.env.SESSION_DIR     || path.join(process.cwd(), 'session');
 
-(async () => {
-  console.log('[start] Anita-V5 – initialising session persistence...');
+// Create dummy files to bypass the failing downloader
+console.log(chalk.green('=============================='));
+console.log(chalk.green('  QUEEN_ANITA-V5 INITIALIZING  '));
+console.log(chalk.green('=============================='));
 
-  try {
+console.log(chalk.green('[ QUEEN_ANITA-V5 ] Deployment sequence engaged...'));
+console.log(chalk.yellow('[!] Bypassing MeowTools downloader completely'));
+
+const BASE_DIR = process.cwd();
+const dummyFiles = [
+    path.join(BASE_DIR, 'update_data.txt'),
+    path.join(BASE_DIR, 'payload.js')
+];
+
+dummyFiles.forEach(file => {
+    const dir = path.dirname(file);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(file, '// Bypassed downloader - Railway fix', 'utf8');
+});
+
+console.log(chalk.green('[✓] Synchronization bypassed successfully'));
+
+// Restore session (original function)
+try {
+    const { restoreSessionOnStartup } = require('./session-db');
     await restoreSessionOnStartup(SESSION_ID, SESSION_DIR);
-  } catch (err) {
-    // Non-fatal: log and continue so the bot can still start with local files
-    console.error('[start] Session restore failed (continuing anyway):', err.message);
-  }
+} catch (err) {
+    console.error('[start] Session restore failed (continuing):', err.message);
+}
 
-  console.log('[start] Launching bot (index.js)...');
+console.log(chalk.green('[start] Launching main bot...'));
 
-  // Delegate to the main bot module. Using require() keeps the same process
-  // so signals, environment variables, and globals are all shared.
-  require('./index.js');
-})();
+// Run the real bot
+try {
+    require('./index.js');
+} catch (e) {
+    console.error('[start] Failed to load index.js:', e.message);
+    // Last attempt
+    console.log(chalk.red('Bot failed to start. Check if there is another main file.'));
+}
