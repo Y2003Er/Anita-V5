@@ -12,9 +12,9 @@ const {
     fetchLatestBaileysVersion,
     makeCacheableSignalKeyStore,
 } = require('@whiskeysockets/baileys');
-const https = require('https');
 
-const logger = pino({ level: 'info' });
+// Logger inayoonyesha kila undani (trace) kwa uchunguzi
+const logger = pino({ level: 'trace' });
 
 const SESSION_DIR = path.resolve(process.env.SESSION_DIR || './session');
 const PHONE_NUMBER = process.env.PHONE_NUMBER?.trim();
@@ -43,8 +43,6 @@ let pairingRequested = false;
 let bootLock = false;
 let openTimer = null;
 
-const insecureAgent = new https.Agent({ rejectUnauthorized: false });
-
 function clearOpenTimer() {
     if (openTimer) {
         clearTimeout(openTimer);
@@ -58,7 +56,7 @@ function displayPairingCode(code) {
     console.log('╠══════════════════════════╣');
     console.log(`║      ${code}      ║`);
     console.log('╚══════════════════════════╝');
-    console.log(`\n📋 CODE: ${code}\n`);
+    console.log(`\n📋 CODE: ${code}\n');
     console.log('👆 WhatsApp → Linked Devices → Link a Device');
     console.log('👆 Link with phone number → Weka namba yako');
     console.log('👆 Popup itatokea yenyewe — bonyeza CONFIRM\n');
@@ -83,22 +81,30 @@ async function startBot() {
             sock = null;
         }
 
+        // ---- SOCKET CONFIG ----
         sock = makeWASocket({
             version,
             auth: {
                 creds: state.creds,
                 keys: makeCacheableSignalKeyStore(state.keys, logger),
             },
-            logger,
+            logger,                           // itaonyesha trace
             printQRInTerminal: false,
-            browser: ['Chrome (Linux)', '', ''],
+            browser: ['Ubuntu', 'Chrome', '120.0.0'], // Thibitisho: hii inafanya kazi
             connectTimeoutMs: 60000,
             keepAliveIntervalMs: 30000,
-            agent: insecureAgent,
+            // Hakuna agent maalum
         });
 
+        // ---- Hifadhi credentials ----
         sock.ev.on('creds.update', saveCreds);
 
+        // ---- Sikiliza usajili ukikamilika (kabla ya 'open') ----
+        sock.ev.on('messaging-history.set', (msg) => {
+            console.log('📦 messaging-history.set:', JSON.stringify(msg).slice(0, 200));
+        });
+
+        // ---- MAIN CONNECTION LISTENER ----
         sock.ev.on('connection.update', async (update) => {
             const { connection, lastDisconnect } = update;
             console.log('🔄 State:', connection);
@@ -160,6 +166,7 @@ async function startBot() {
             }
         });
 
+        // ---- Timer ya dharura ----
         openTimer = setTimeout(() => {
             console.log('⏰ Haikufunguka kwa sekunde 90. Restarting...');
             isConnecting = false;
