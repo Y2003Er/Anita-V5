@@ -28,7 +28,6 @@ if (!PHONE_NUMBER) {
 
 let sock = null;
 let isConnecting = false;
-let pairingRequested = false; // 🔥 FIX 1: prevent duplicate pairing
 
 function displayPairingCode(code) {
     console.log('\n╔══════════════════════════╗');
@@ -45,7 +44,6 @@ function displayPairingCode(code) {
 async function startBot() {
     if (isConnecting) return;
     isConnecting = true;
-    pairingRequested = false; // 🔥 reset kila start
 
     try {
         const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
@@ -71,14 +69,23 @@ async function startBot() {
 
         sock.ev.on('creds.update', saveCreds);
 
-        // =========================
-        // 🔥 PAIRING (FIXED ONCE ONLY)
-        // =========================
-        if (!state.creds.registered && !pairingRequested) {
-            pairingRequested = true;
+        // ✅ PAIRING — subiri socket iwe connecting kwanza
+        if (!state.creds.registered) {
+            console.log('⏳ Inasubiri connection...');
+
+            // Subiri hadi connecting au open
+            await new Promise(resolve => {
+                const handler = (update) => {
+                    if (update.connection === 'connecting' || update.connection === 'open') {
+                        sock.ev.off('connection.update', handler);
+                        resolve();
+                    }
+                };
+                sock.ev.on('connection.update', handler);
+                setTimeout(resolve, 5000); // max sekunde 5
+            });
 
             console.log('⚡ Inaomba pairing code...');
-
             try {
                 const code = await sock.requestPairingCode(PHONE_NUMBER);
                 displayPairingCode(code);
@@ -88,19 +95,18 @@ async function startBot() {
                 setTimeout(startBot, 5000);
                 return;
             }
-        } else if (state.creds.registered) {
+        } else {
             console.log('✅ Session ipo. Inaunganisha...');
         }
 
         sock.ev.on('connection.update', (update) => {
             const { connection, lastDisconnect } = update;
 
-            console.log('🔄 State:', connection || 'unknown');
+            console.log('🔄 State:', connection);
 
             if (connection === 'open') {
                 console.log('🟢 BOT ONLINE SUCCESSFULLY!');
                 isConnecting = false;
-                pairingRequested = false; // 🔥 reset after success
             }
 
             if (connection === 'close') {
@@ -112,7 +118,6 @@ async function startBot() {
                 console.log('════════════════════════\n');
 
                 isConnecting = false;
-                pairingRequested = false;
 
                 if (statusCode === DisconnectReason.loggedOut || statusCode === 401) {
                     console.log('❌ Session invalid. Inafuta...');
@@ -127,7 +132,6 @@ async function startBot() {
     } catch (err) {
         console.error('BOT ERROR:', err);
         isConnecting = false;
-        pairingRequested = false;
         setTimeout(startBot, 5000);
     }
 }
