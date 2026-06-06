@@ -5,7 +5,8 @@ const path = require('path');
 const {
     default: makeWASocket,
     DisconnectReason,
-    useMultiFileAuthState
+    useMultiFileAuthState,
+    fetchLatestBaileysVersion
 } = require('@whiskeysockets/baileys');
 
 const SESSION_DIR = path.resolve(process.env.SESSION_DIR || './session');
@@ -55,7 +56,6 @@ async function startBot() {
     if (isReconnecting) return;
     isReconnecting = true;
 
-    // Futa timer ya zamani kama ipo
     if (pairingTimer) {
         clearTimeout(pairingTimer);
         pairingTimer = null;
@@ -64,14 +64,19 @@ async function startBot() {
     try {
         const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
 
+        // ✅ Pata version mpya ya WhatsApp
+        const { version, isLatest } = await fetchLatestBaileysVersion();
+        console.log(`📱 WhatsApp version: ${version.join('.')} (latest: ${isLatest})`);
+
         const sock = makeWASocket({
+            version,
             auth: state,
             printQRInTerminal: false,
             mobile: false,
             browser: ['Chrome (Ubuntu)', 'Chrome', '121.0.0.0'],
-            connectTimeoutMs: 120000,   // ✅ Dakika 2
-            defaultQueryTimeoutMs: 120000, // ✅ Dakika 2
-            keepAliveIntervalMs: 10000, // ✅ Ping kila sekunde 10
+            connectTimeoutMs: 120000,
+            defaultQueryTimeoutMs: 120000,
+            keepAliveIntervalMs: 10000,
         });
 
         sock.ev.on('creds.update', saveCreds);
@@ -94,7 +99,6 @@ async function startBot() {
                 isReconnecting = false;
 
                 if (pairingDone) {
-                    // ✅ Reconnect haraka ili connection ikae hai
                     console.log('🔄 Inaendelea kusubiri mtumiaji...');
                     setTimeout(startBot, 3000);
                     return;
@@ -116,7 +120,6 @@ async function startBot() {
         });
 
         if (!state.creds.registered && !pairingDone) {
-            // Subiri connection kwanza
             await new Promise(resolve => {
                 const handler = (u) => {
                     if (u.connection === 'connecting' || u.connection === 'open') {
@@ -135,14 +138,13 @@ async function startBot() {
                 pairingDone = true;
                 displayPairingCode(code);
 
-                // ✅ Baada ya dakika 2 kama haijaunganika, jaribu tena
                 pairingTimer = setTimeout(() => {
                     console.log('⏰ Dakika 2 zimepita. Inaomba code mpya...');
                     pairingDone = false;
                     sock.end();
                     isReconnecting = false;
                     setTimeout(startBot, 3000);
-                }, 120000); // ✅ Dakika 2
+                }, 120000);
 
             } catch (err) {
                 console.error('❌ Pairing imeshindwa:', err.message);
