@@ -12,27 +12,20 @@ const {
 const SESSION_FILE = path.join(process.cwd(), 'session.json');
 const PHONE_NUMBER = process.env.PHONE_NUMBER;
 
+let validationErrorCount = 0;
+let isRestarting = false; // kuzuia migongano
+
 console.log('==============================');
 console.log('  QUEEN_ANITA-V5 STARTING  ');
 console.log('==============================');
 
 // ------------------------------------------------------------
-// 1. Soma SESSION_JSON na urekebishe muundo (hakikisha ina creds + keys)
+// 1. Ikiwa kuna SESSION_JSON kwenye env, iandike kwenye faili
+//    (sasa hatuibadilishi muundo – tutaruhusu bot iangalie kama ni halali)
 // ------------------------------------------------------------
-if (process.env.SESSION_JSON) {
+if (process.env.SESSION_JSON && !fs.existsSync(SESSION_FILE)) {
     try {
-        let rawSession = JSON.parse(process.env.SESSION_JSON);
-        
-        // Ikiwa session ni creds peke yake (haina 'keys' key)
-        if (!rawSession.creds && !rawSession.keys) {
-            // Inaonekana ni creds tu (vile ulivyoionesha)
-            rawSession = {
-                creds: rawSession,
-                keys: {}   // tupu, Baileys itajaza
-            };
-            console.log('✓ Muundo wa session umerekebishwa (creds + empty keys)');
-        }
-        
+        const rawSession = JSON.parse(process.env.SESSION_JSON);
         fs.writeFileSync(SESSION_FILE, JSON.stringify(rawSession, null, 2));
         console.log('✓ Session imeandikwa kutoka SESSION_JSON env');
     } catch (err) {
@@ -41,7 +34,7 @@ if (process.env.SESSION_JSON) {
 }
 
 // ------------------------------------------------------------
-// 2. Msimbo wa auth state (unaoweza kuhifadhi keys wakati wowote)
+// 2. Msimbo wa kuweka na kupata session (salama)
 // ------------------------------------------------------------
 let currentState = { creds: {}, keys: {} };
 
@@ -51,7 +44,7 @@ const loadAuthState = () => {
             const data = fs.readFileSync(SESSION_FILE, 'utf-8');
             const saved = JSON.parse(data);
             currentState = {
-                creds: saved.creds || {},
+                creds: saved.creds || saved,  // kama saved ni creds peke yake
                 keys: saved.keys || {}
             };
             return currentState;
@@ -71,10 +64,22 @@ const saveAuthState = () => {
     }
 };
 
+const deleteSessionAndReset = () => {
+    console.log('🧹 Session batili inafutwa...');
+    try {
+        if (fs.existsSync(SESSION_FILE)) fs.unlinkSync(SESSION_FILE);
+    } catch(e) {}
+    currentState = { creds: {}, keys: {} };
+    validationErrorCount = 0;
+};
+
 // ------------------------------------------------------------
 // 3. Anzisha bot
 // ------------------------------------------------------------
 async function startBot() {
+    if (isRestarting) return;
+    isRestarting = true;
+
     try {
         let authState = loadAuthState();
         const { version } = await fetchLatestBaileysVersion();
@@ -101,23 +106,51 @@ async function startBot() {
 
             if (connection === 'open') {
                 console.log(`🟢 BOT ONLINE - ${sock.user?.id || 'unknown'}`);
+                validationErrorCount = 0; // reset count after success
+                isRestarting = false;
             }
 
             if (connection === 'close') {
-                const statusCode = lastDisconnect?.error?.output?.statusCode;
+                const error = lastDisconnect?.error;
+                const statusCode = error?.output?.statusCode;
                 console.log('🔴 CONNECTION CLOSED');
 
-                if (statusCode !== DisconnectReason.loggedOut) {
+                // Kugundua kama kosa ni la validation (session batili)
+                const isValidationError = error?.message?.includes('validation') ||
+                                         error?.message?.includes('public') ||
+                                         statusCode === 403;
+
+                if (isValidationError) {
+                    validationErrorCount++;
+                    console.log(`⚠️ Validation error #${validationErrorCount}`);
+                    if (validationErrorCount >= 3) {
+                        console.log('❌ Session imetambuliwa kuwa batili. Inafutwa na kuanza upya...');
+                        deleteSessionAndReset();
+                        validationErrorCount = 0;
+                        setTimeout(() => {
+                            isRestarting = false;
+                            startBot();
+                        }, 1000);
+                        return;
+                    }
+                }
+
+                const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+                if (shouldReconnect) {
                     console.log('🔄 Reconnecting in 5 sec...');
-                    setTimeout(startBot, 5000);
+                    setTimeout(() => {
+                        isRestarting = false;
+                        startBot();
+                    }, 5000);
                 } else {
                     console.log('❌ Logged out. Futa session.json na uanze upya.');
+                    deleteSessionAndReset();
                 }
             }
         });
 
         // --------------------------------------------------------
-        // 4. Pairing code - tu ikiwa creds hazijasajiliwa au hazipo
+        // 4. Omba pairing code TU ikiwa hakuna creds zilizosajiliwa
         // --------------------------------------------------------
         const isRegistered = authState.creds && authState.creds.registered === true;
         if (!isRegistered && PHONE_NUMBER) {
@@ -127,7 +160,7 @@ async function startBot() {
                 console.log('💡 Ingiza code kwenye WhatsApp > Linked Devices');
             } catch (e) {
                 console.log('❌ Pairing error:', e.message);
-                console.log('⚠️ Angalia: session yako inaweza kuwa batili. Futa SESSION_JSON env na uanze upya.');
+                console.log('⚠️ Hakikisha PHONE_NUMBER iko sahihi kwenye .env');
             }
         } else if (!isRegistered) {
             console.log('⚠️ Hakuna session na hakuna PHONE_NUMBER. Weka SESSION_JSON au PHONE_NUMBER');
@@ -136,10 +169,14 @@ async function startBot() {
         }
 
         console.log('[✓] Bot initializing...');
+        isRestarting = false;
 
     } catch (err) {
         console.error('BOT ERROR:', err);
-        setTimeout(startBot, 5000);
+        setTimeout(() => {
+            isRestarting = false;
+            startBot();
+        }, 5000);
     }
 }
 
