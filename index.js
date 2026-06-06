@@ -6,6 +6,7 @@ const dotenv = require('dotenv');
 dotenv.config();
 
 const pino = require('pino');
+const chalk = require('chalk');
 const {
     default: makeWASocket,
     DisconnectReason,
@@ -23,17 +24,17 @@ if (!fs.existsSync(SESSION_DIR)) {
     fs.mkdirSync(SESSION_DIR, { recursive: true });
 }
 
-console.log('==============================');
-console.log('  QUEEN_ANITA-V5 STARTING    ');
-console.log('==============================');
+console.log(chalk.cyan('=============================='));
+console.log(chalk.cyan.bold('  QUEEN_ANITA-V5 STARTING    '));
+console.log(chalk.cyan('=============================='));
 
 if (!PHONE_NUMBER) {
-    console.log('❌ PHONE_NUMBER haipo kwenye .env');
+    console.log(chalk.red.bold('❌ PHONE_NUMBER haipo kwenye .env'));
     process.exit(1);
 }
 
 if (!/^\d{10,15}$/.test(PHONE_NUMBER)) {
-    console.log('❌ PHONE_NUMBER si sahihi');
+    console.log(chalk.red.bold('❌ PHONE_NUMBER si sahihi'));
     process.exit(1);
 }
 
@@ -49,12 +50,12 @@ function clearOpenTimer() {
 }
 
 function displayPairingCode(code) {
-    console.log('\n╔══════════════════════════╗');
-    console.log('║   🔑 PAIRING CODE        ║');
-    console.log('╠══════════════════════════╣');
-    console.log(`║      ${code}      ║`);
-    console.log('╚══════════════════════════╝');
-    console.log(`\n📋 CODE: ${code}\n`);
+    console.log(chalk.yellow('\n╔══════════════════════════╗'));
+    console.log(chalk.yellow('║   🔑 PAIRING CODE        ║'));
+    console.log(chalk.yellow('╠══════════════════════════╣'));
+    console.log(chalk.yellow(`║      ${code}      ║`));
+    console.log(chalk.yellow('╚══════════════════════════╝'));
+    console.log(chalk.yellow.bold(`\n📋 CODE: ${code}\n`));
 }
 
 async function startBot() {
@@ -92,7 +93,7 @@ async function startBot() {
         sock.ev.on('connection.update', async (update) => {
             const { connection, lastDisconnect } = update;
 
-            console.log('🔄 State:', connection);
+            console.log(chalk.cyan('🔄 State:', connection));
 
             // ✅ ONLY ONCE SAFE PAIRING TRIGGER
             if (
@@ -105,17 +106,17 @@ async function startBot() {
                 setTimeout(async () => {
                     try {
                         if (!sock || sock.ws?.readyState !== 1) {
-                            console.log('⚠️ Socket not ready, retrying pairing...');
+                            console.log(chalk.yellow('⚠️ Socket not ready, retrying pairing...'));
                             pairingRequested = false;
                             return;
                         }
 
-                        console.log(`📱 Requesting pairing code...`);
+                        console.log(chalk.cyan('📱 Requesting pairing code...'));
                         const code = await sock.requestPairingCode(PHONE_NUMBER);
                         displayPairingCode(code);
 
                     } catch (err) {
-                        console.log('❌ Pairing error:', err.message);
+                        console.log(chalk.red.bold('❌ Pairing error:', err.message));
                         pairingRequested = false;
                     }
                 }, 8000);
@@ -123,7 +124,7 @@ async function startBot() {
 
             if (connection === 'open') {
                 clearOpenTimer();
-                console.log('🟢 BOT ONLINE SUCCESSFULLY!');
+                console.log(chalk.green.bold('🟢 BOT ONLINE SUCCESSFULLY!'));
                 isConnecting = false;
                 bootLock = false;
             }
@@ -133,14 +134,14 @@ async function startBot() {
 
                 const statusCode = lastDisconnect?.error?.output?.statusCode;
 
-                console.log('❌ DISCONNECTED:', statusCode);
+                console.log(chalk.red.bold('❌ DISCONNECTED:', statusCode));
 
                 isConnecting = false;
                 bootLock = false;
 
                 // ❗ FIX: only clear session on real logout
                 if (statusCode === DisconnectReason.loggedOut) {
-                    console.log('🧹 Session cleared');
+                    console.log(chalk.yellow('🧹 Session cleared'));
                     fs.rmSync(SESSION_DIR, { recursive: true, force: true });
                     fs.mkdirSync(SESSION_DIR, { recursive: true });
                 }
@@ -151,7 +152,7 @@ async function startBot() {
 
         // ⏰ SAFETY TIMEOUT
         openTimer = setTimeout(() => {
-            console.log('⏰ Timeout restart...');
+            console.log(chalk.yellow('⏰ Timeout restart...'));
             isConnecting = false;
             bootLock = false;
 
@@ -164,13 +165,13 @@ async function startBot() {
         }, 120000);
 
         if (state.creds.registered) {
-            console.log('✅ Session exists, connecting...');
+            console.log(chalk.green('✅ Session exists, connecting...'));
         } else {
-            console.log('⏳ New session, waiting pairing...');
+            console.log(chalk.yellow('⏳ New session, waiting pairing...'));
         }
 
     } catch (err) {
-        console.log('BOT ERROR:', err.message);
+        console.log(chalk.red.bold('BOT ERROR:', err.message));
         isConnecting = false;
         bootLock = false;
         setTimeout(startBot, 7000);
