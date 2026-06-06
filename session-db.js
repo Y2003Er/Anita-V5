@@ -1,14 +1,6 @@
 'use strict';
 
-/**
- * session-db.js
- * PostgreSQL-backed WhatsApp session persistence for Anita-V5.
- * Session inahifadhiwa DB peke yake — hakuna faili za local.
- */
-
 const { Pool } = require('pg');
-const fs = require('fs');
-const path = require('path');
 const {
     initAuthCreds,
     proto,
@@ -24,7 +16,7 @@ function getPool() {
 
     const connectionString = process.env.DATABASE_URL;
     if (!connectionString) {
-        console.warn('[session-db] DATABASE_URL haipo — Bot imesimama.');
+        console.error('[session-db] DATABASE_URL haipo — Bot imesimama.');
         process.exit(1);
     }
 
@@ -43,25 +35,22 @@ function getPool() {
     return pool;
 }
 
-// ─── Schema initialisation ────────────────────────────────────────────────────
+// ─── Schema ───────────────────────────────────────────────────────────────────
 
 async function initializeDatabase() {
     const p = getPool();
     if (!p) return false;
 
     try {
+        // Kila faili ya session inahifadhiwa kama row yake — rahisi na salama
         await p.query(`
             CREATE TABLE IF NOT EXISTS whatsapp_sessions (
-                session_id   TEXT        PRIMARY KEY,
+                session_id   TEXT        NOT NULL,
+                file_key     TEXT        NOT NULL,
                 session_data JSONB       NOT NULL,
-                created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (session_id, file_key)
             );
-        `);
-
-        await p.query(`
-            CREATE INDEX IF NOT EXISTS idx_whatsapp_sessions_session_id
-                ON whatsapp_sessions (session_id);
         `);
 
         dbAvailable = true;
@@ -74,57 +63,119 @@ async function initializeDatabase() {
     }
 }
 
-// ─── CRUD helpers ─────────────────────────────────────────────────────────────
+// ─── Low-level helpers ────────────────────────────────────────────────────────
 
-async function saveSession(sessionId, sessionData) {
-    if (!dbAvailable) return false;
+async function dbGet(sessionId, fileKey) {
     const p = getPool();
-    if (!p) return false;
-
     try {
-        await p.query(`
-            INSERT INTO whatsapp_sessions (session_id, session_data, updated_at)
-            VALUES ($1, $2::jsonb, NOW())
-            ON CONFLICT (session_id)
-            DO UPDATE SET session_data = EXCLUDED.session_data,
-                          updated_at   = NOW();
-        `, [sessionId, JSON.stringify(sessionData)]);
-        return true;
-    } catch (err) {
-        console.error('[session-db] saveSession error:', err.message);
-        return false;
-    }
-}
-
-async function loadSession(sessionId) {
-    if (!dbAvailable) return null;
-    const p = getPool();
-    if (!p) return null;
-
-    try {
-        const result = await p.query(
-            `SELECT session_data FROM whatsapp_sessions WHERE session_id = $1 LIMIT 1;`,
-            [sessionId]
+        const res = await p.query(
+            `SELECT session_data FROM whatsapp_sessions
+             WHERE session_id = $1 AND file_key = $2 LIMIT 1`,
+            [sessionId, fileKey]
         );
-        if (result.rows.length === 0) return null;
-        return result.rows[0].session_data;
+        return res.rows.length > 0 ? res.rows[0].session_data : null;
     } catch (err) {
-        console.error('[session-db] loadSession error:', err.message);
+        console.error(`[session-db] dbGet error (${fileKey}):`, err.message);
         return null;
     }
 }
 
+async function dbSet(sessionId, fileKey, value) {
+    const p = getPool();
+    try {
+        await p.query(`
+            INSERT INTO whatsapp_sessions (session_id, file_key, session_data, updated_at)
+            VALUES ($1, $2, $3::jsonb, NOW())
+            ON CONFLICT (session_id, file_key)
+            DO UPDATE SET session_data = EXCLUDED.session_data,
+                          updated_at   = NOW()
+        `, [sessionId, fileKey, JSON.stringify(value)]);
+    } catch (err) {
+        console.error(`[session-db] dbSet error (${fileKey}):`, err.message);
+    }
+}
+
+async function dbDel(sessionId, fileKey) {
+    const p = getPool();
+    try {
+        await p.query(
+            `DELETE FROM whatsapp_sessions WHERE session_id = $1 AND file_key = $2`,
+            [sessionId, fileKey]
+        );
+    } catch (err) {
+        console.error(`[session-db] dbDel error (${fileKey}):`, err.message);
+    }
+}
+
+// ─── usePostgresAuthState ─────────────────────────────────────────────────────
+
+async function usePostgresAuthState(sessionId) {
+
+    // Soma creds — hifadhi kama row yake mwenyewe
+    let creds = await dbGet(sessionId, 'creds');
+    if (!creds) {
+        creds = initAuthCreds();
+        // Hifadhi mara moja creds mpya
+        await dbSet(sessionId, 'creds', creds);
+        console.log('[session-db] Session mpya — Inahitaji pairing.');
+    } else {
+        console.log('[session-db] ✔ Session inapatikana DB — Inaunganika...');
+    }
+
+    const keys = {
+        get: async (type, ids) => {
+            const data = {};
+            await Promise.all(ids.map(async (id) => {
+                const fileKey = `${type}--${id}`;
+                const val = await dbGet(sessionId, fileKey);
+                if (val) {
+                    if (type === 'app-state-sync-key') {
+                        data[id] = proto.Message.AppStateSyncKeyData.fromObject(val);
+                    } else {
+                        data[id] = val;
+                    }
+                }
+            }));
+            return data;
+        },
+
+        set: async (data) => {
+            await Promise.all(
+                Object.entries(data).flatMap(([type, ids]) =>
+                    Object.entries(ids ?? {}).map(([id, value]) => {
+                        const fileKey = `${type}--${id}`;
+                        return value
+                            ? dbSet(sessionId, fileKey, value)
+                            : dbDel(sessionId, fileKey);
+                    })
+                )
+            );
+        },
+    };
+
+    // saveCreds — MUHIMU: hifadhi creds zilizobadilika mara moja
+    const saveCreds = async () => {
+        await dbSet(sessionId, 'creds', creds);
+        console.log('[session-db] ✔ Creds zimehifadhiwa DB.');
+    };
+
+    return {
+        state: { creds, keys },
+        saveCreds,
+    };
+}
+
+// ─── Session management ───────────────────────────────────────────────────────
+
 async function deleteSession(sessionId) {
     if (!dbAvailable) return false;
     const p = getPool();
-    if (!p) return false;
-
     try {
         await p.query(
-            `DELETE FROM whatsapp_sessions WHERE session_id = $1;`,
+            `DELETE FROM whatsapp_sessions WHERE session_id = $1`,
             [sessionId]
         );
-        console.log(`[session-db] Session "${sessionId}" imefutwa.`);
+        console.log(`[session-db] Session "${sessionId}" imefutwa DB.`);
         return true;
     } catch (err) {
         console.error('[session-db] deleteSession error:', err.message);
@@ -134,12 +185,10 @@ async function deleteSession(sessionId) {
 
 async function sessionExistsInDB(sessionId) {
     if (!dbAvailable) return false;
-    const p = getPool();
-    if (!p) return false;
-
     try {
-        const res = await p.query(
-            `SELECT 1 FROM whatsapp_sessions WHERE session_id = $1 LIMIT 1;`,
+        const res = await getPool().query(
+            `SELECT 1 FROM whatsapp_sessions
+             WHERE session_id = $1 AND file_key = 'creds' LIMIT 1`,
             [sessionId]
         );
         return res.rows.length > 0;
@@ -148,79 +197,11 @@ async function sessionExistsInDB(sessionId) {
     }
 }
 
-// ─── usePostgresAuthState ─────────────────────────────────────────────────────
-// Badala kamili ya useMultiFileAuthState — inatumia DB peke yake
-
-async function usePostgresAuthState(sessionId) {
-    // Soma session yote kutoka DB (object moja)
-    let stored = await loadSession(sessionId);
-
-    // creds — soma au unda mpya
-    let creds = stored?.creds ?? null;
-    if (!creds) {
-        creds = initAuthCreds();
-        console.log('[session-db] Session mpya — Inahitaji pairing.');
-    } else {
-        console.log('[session-db] ✔ Session inapatikana — Inaunganika...');
-    }
-
-    // keys — soma kutoka stored au anza na tupu
-    let keysData = stored?.keys ?? {};
-
-    // Hifadhi session yote (creds + keys) kwenye DB
-    async function persist() {
-        await saveSession(sessionId, { creds, keys: keysData });
-    }
-
-    const keys = {
-        get: async (type, ids) => {
-            const data = {};
-            for (const id of ids) {
-                const val = keysData[`${type}:${id}`];
-                if (val) {
-                    // Baileys inahitaji proto object kwa aina hii
-                    if (type === 'app-state-sync-key') {
-                        data[id] = proto.Message.AppStateSyncKeyData.fromObject(val);
-                    } else {
-                        data[id] = val;
-                    }
-                }
-            }
-            return data;
-        },
-
-        set: async (data) => {
-            for (const [type, ids] of Object.entries(data)) {
-                for (const [id, value] of Object.entries(ids ?? {})) {
-                    const k = `${type}:${id}`;
-                    if (value) {
-                        keysData[k] = value;
-                    } else {
-                        delete keysData[k];
-                    }
-                }
-            }
-            await persist();
-        },
-    };
-
-    const saveCreds = async () => {
-        await persist();
-    };
-
-    return {
-        state: { creds, keys },
-        saveCreds,
-    };
-}
-
 // ─── Exports ──────────────────────────────────────────────────────────────────
 
 module.exports = {
     initializeDatabase,
     usePostgresAuthState,
-    saveSession,
-    loadSession,
     deleteSession,
     sessionExistsInDB,
 };
