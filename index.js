@@ -3,7 +3,6 @@ require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
 const chalk = require('chalk');
-const { Pool } = require('pg');
 const {
     default: makeWASocket,
     DisconnectReason,
@@ -11,12 +10,13 @@ const {
     useMultiFileAuthState
 } = require('@whiskeysockets/baileys');
 
-const SESSION_DIR = process.env.SESSION_DIR || './session';
+const SESSION_DIR = path.resolve(process.env.SESSION_DIR || './session');
 const PHONE_NUMBER = process.env.PHONE_NUMBER?.trim();
 
+// Unda folder ya session
 if (!fs.existsSync(SESSION_DIR)) fs.mkdirSync(SESSION_DIR, { recursive: true });
 
-// Clear any junk files (like dcx.js) from session folder
+// Futa files zisizo za JSON kwenye session
 fs.readdirSync(SESSION_DIR).forEach(file => {
     if (!file.endsWith('.json')) {
         console.log(chalk.yellow(`⚠️ Removing unexpected file: ${file}`));
@@ -29,7 +29,7 @@ console.log(chalk.green('  QUEEN_ANITA-V5 STARTING    '));
 console.log(chalk.green('=============================='));
 
 if (!PHONE_NUMBER) {
-    console.log(chalk.red('❌ PHONE_NUMBER not set in .env'));
+    console.log(chalk.red('❌ PHONE_NUMBER haipo kwenye .env'));
     process.exit(1);
 }
 
@@ -39,7 +39,6 @@ async function startBot() {
     if (isReconnecting) return;
     isReconnecting = true;
 
-    // Clean session of any non-JSON files before loading
     const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
 
     const sock = makeWASocket({
@@ -66,33 +65,33 @@ async function startBot() {
             isReconnecting = false;
 
             if (code === DisconnectReason.loggedOut) {
-                console.log(chalk.red('❌ Logged out. Clearing session...'));
+                console.log(chalk.red('❌ Logged out. Inafuta session...'));
                 fs.rmSync(SESSION_DIR, { recursive: true, force: true });
                 fs.mkdirSync(SESSION_DIR, { recursive: true });
                 setTimeout(startBot, 3000);
             } else {
-                console.log(chalk.yellow('🔄 Reconnecting in 5 seconds...'));
+                console.log(chalk.yellow('🔄 Reconnecting baada ya sekunde 5...'));
                 setTimeout(startBot, 5000);
             }
         }
     });
 
     if (!state.creds.registered) {
-        console.log(chalk.blue('⏳ Waiting 6 seconds before requesting pairing code...'));
+        console.log(chalk.blue('⏳ Inasubiri sekunde 6 kabla ya pairing...'));
         await new Promise(r => setTimeout(r, 6000));
 
         try {
             const code = await sock.requestPairingCode(PHONE_NUMBER);
             console.log(chalk.green(`\n🔑 PAIRING CODE: ${code}`));
-            console.log(chalk.cyan('Enter this in WhatsApp > Linked Devices > Link with phone number\n'));
+            console.log(chalk.cyan('Weka code hii: WhatsApp > Linked Devices > Link with phone number\n'));
         } catch (err) {
-            console.error(chalk.red('❌ Pairing failed:'), err.message);
+            console.error(chalk.red('❌ Pairing imeshindwa:'), err.message);
             sock.end();
             isReconnecting = false;
             setTimeout(startBot, 10000);
         }
     } else {
-        console.log(chalk.green('✅ Session valid. Connecting...'));
+        console.log(chalk.green('✅ Session ipo. Inaunganisha...'));
     }
 }
 
