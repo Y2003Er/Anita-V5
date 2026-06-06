@@ -1,11 +1,10 @@
-// session-db.js – Fixed version with binary serialization (base64)
+// session-db.js – with verbose logging and safe binary handling
 'use strict';
 
 const { Pool } = require('pg');
 const { initAuthCreds, proto } = require('@whiskeysockets/baileys');
 
 let pool = null;
-let dbAvailable = false;
 
 function getPool() {
     if (pool) return pool;
@@ -19,64 +18,57 @@ function getPool() {
         ssl: connectionString.includes('localhost') ? false : { rejectUnauthorized: false },
         max: 5,
         idleTimeoutMillis: 30000,
-        connectionTimeoutMillis: 30000, // increased for public URL
+        connectionTimeoutMillis: 30000,
     });
     pool.on('error', (err) => console.error('[session-db] Pool error:', err.message));
     return pool;
 }
 
-// ========== Serialization helpers for Buffer ==========
-function toSerializable(value) {
-    if (Buffer.isBuffer(value)) {
-        return { __type: 'Buffer', data: value.toString('base64') };
+// Serialize Buffers to base64
+function toSerializable(obj) {
+    if (Buffer.isBuffer(obj)) {
+        return { __type: 'Buffer', data: obj.toString('base64') };
     }
-    if (value && typeof value === 'object') {
-        if (Array.isArray(value)) {
-            return value.map(v => toSerializable(v));
-        }
+    if (obj && typeof obj === 'object') {
+        if (Array.isArray(obj)) return obj.map(toSerializable);
         const copy = {};
-        for (const [k, v] of Object.entries(value)) {
+        for (const [k, v] of Object.entries(obj)) {
             copy[k] = toSerializable(v);
         }
         return copy;
     }
-    return value;
+    return obj;
 }
 
-function fromSerializable(value) {
-    if (value && typeof value === 'object') {
-        if (value.__type === 'Buffer' && typeof value.data === 'string') {
-            return Buffer.from(value.data, 'base64');
+function fromSerializable(obj) {
+    if (obj && typeof obj === 'object') {
+        if (obj.__type === 'Buffer' && typeof obj.data === 'string') {
+            return Buffer.from(obj.data, 'base64');
         }
-        if (Array.isArray(value)) {
-            return value.map(v => fromSerializable(v));
-        }
-        for (const k in value) {
-            value[k] = fromSerializable(value[k]);
+        if (Array.isArray(obj)) return obj.map(fromSerializable);
+        for (const k in obj) {
+            obj[k] = fromSerializable(obj[k]);
         }
     }
-    return value;
+    return obj;
 }
 
-// ========== Database operations ==========
 async function initializeDatabase() {
     const p = getPool();
     try {
         await p.query(`
             CREATE TABLE IF NOT EXISTS whatsapp_sessions (
-                session_id   TEXT        NOT NULL,
-                file_key     TEXT        NOT NULL,
-                session_data JSONB       NOT NULL,
-                updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                session_id TEXT NOT NULL,
+                file_key TEXT NOT NULL,
+                session_data JSONB NOT NULL,
+                updated_at TIMESTAMPTZ DEFAULT NOW(),
                 PRIMARY KEY (session_id, file_key)
-            );
+            )
         `);
-        dbAvailable = true;
-        console.log('[session-db] ✔ Database tayari.');
+        console.log('[session-db] ✅ Table ipo tayari');
         return true;
     } catch (err) {
-        console.error('[session-db] Kuanzisha DB kumeshindwa:', err.message);
-        dbAvailable = false;
+        console.error('[session-db] ❌ Table creation failed:', err.message);
         return false;
     }
 }
@@ -89,8 +81,8 @@ async function dbGet(sessionId, fileKey) {
             [sessionId, fileKey]
         );
         if (!res.rows.length) return null;
-        // Deserialize: convert base64 back to Buffer
-        return fromSerializable(res.rows[0].session_data);
+        const raw = res.rows[0].session_data;
+        return fromSerializable(raw);
     } catch (err) {
         console.error(`[session-db] dbGet error (${fileKey}):`, err.message);
         return null;
@@ -99,7 +91,6 @@ async function dbGet(sessionId, fileKey) {
 
 async function dbSet(sessionId, fileKey, value) {
     const p = getPool();
-    // Serialize: convert Buffers to base64
     const serialized = toSerializable(value);
     try {
         await p.query(`
@@ -108,8 +99,9 @@ async function dbSet(sessionId, fileKey, value) {
             ON CONFLICT (session_id, file_key) DO UPDATE
             SET session_data = EXCLUDED.session_data, updated_at = NOW()
         `, [sessionId, fileKey, JSON.stringify(serialized)]);
+        console.log(`[session-db] ✅ ${fileKey} saved`);
     } catch (err) {
-        console.error(`[session-db] dbSet error (${fileKey}):`, err.message);
+        console.error(`[session-db] ❌ ${fileKey} failed:`, err.message);
     }
 }
 
@@ -117,20 +109,20 @@ async function dbDel(sessionId, fileKey) {
     const p = getPool();
     try {
         await p.query(`DELETE FROM whatsapp_sessions WHERE session_id = $1 AND file_key = $2`, [sessionId, fileKey]);
+        console.log(`[session-db] 🗑️ ${fileKey} deleted`);
     } catch (err) {
-        console.error(`[session-db] dbDel error (${fileKey}):`, err.message);
+        console.error(`[session-db] dbDel error:`, err.message);
     }
 }
 
-// ========== Baileys auth state ==========
 async function usePostgresAuthState(sessionId) {
     let creds = await dbGet(sessionId, 'creds');
     if (!creds) {
         creds = initAuthCreds();
         await dbSet(sessionId, 'creds', creds);
-        console.log('[session-db] Session mpya — Inahitaji pairing.');
+        console.log('[session-db] 🆕 New session created, pairing required');
     } else {
-        console.log('[session-db] ✔ Session inapatikana DB — Inaunganika...');
+        console.log('[session-db] ♻️ Existing session found, reusing');
     }
 
     const keys = {
@@ -163,38 +155,23 @@ async function usePostgresAuthState(sessionId) {
 
     const saveCreds = async () => {
         await dbSet(sessionId, 'creds', creds);
-        console.log('[session-db] ✔ Creds zimehifadhiwa DB.');
+        console.log('[session-db] 💾 Creds saved after update');
     };
 
     return { state: { creds, keys }, saveCreds };
 }
 
 async function deleteSession(sessionId) {
-    if (!dbAvailable) return false;
     try {
         await getPool().query(`DELETE FROM whatsapp_sessions WHERE session_id = $1`, [sessionId]);
-        console.log(`[session-db] Session "${sessionId}" imefutwa DB.`);
-        return true;
+        console.log(`[session-db] 🗑️ Session ${sessionId} deleted`);
     } catch (err) {
-        console.error('[session-db] deleteSession error:', err.message);
-        return false;
+        console.error('[session-db] delete error:', err.message);
     }
-}
-
-async function sessionExistsInDB(sessionId) {
-    if (!dbAvailable) return false;
-    try {
-        const res = await getPool().query(
-            `SELECT 1 FROM whatsapp_sessions WHERE session_id = $1 AND file_key = 'creds' LIMIT 1`,
-            [sessionId]
-        );
-        return res.rows.length > 0;
-    } catch { return false; }
 }
 
 module.exports = {
     initializeDatabase,
     usePostgresAuthState,
     deleteSession,
-    sessionExistsInDB,
 };
