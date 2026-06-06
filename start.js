@@ -31,6 +31,7 @@ if (!PHONE_NUMBER) {
 
 let isReconnecting = false;
 let pairingDone = false;
+let pairingTimer = null;
 
 function displayPairingCode(code) {
     console.log('\n');
@@ -47,12 +48,18 @@ function displayPairingCode(code) {
     console.log('👆 WhatsApp → Settings → Linked Devices');
     console.log('👆 Link a Device → Link with phone number');
     console.log('👆 Weka namba → Bonyeza CONFIRM kwenye popup');
-    console.log('⏳ Una sekunde 60 tu!\n');
+    console.log('⏳ Una dakika 2 kuweka code!\n');
 }
 
 async function startBot() {
     if (isReconnecting) return;
     isReconnecting = true;
+
+    // Futa timer ya zamani kama ipo
+    if (pairingTimer) {
+        clearTimeout(pairingTimer);
+        pairingTimer = null;
+    }
 
     try {
         const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
@@ -61,11 +68,10 @@ async function startBot() {
             auth: state,
             printQRInTerminal: false,
             mobile: false,
-            // ✅ Exactly kama WhatsApp Web inavyojionyesha
             browser: ['Chrome (Ubuntu)', 'Chrome', '121.0.0.0'],
-            connectTimeoutMs: 60000,
-            defaultQueryTimeoutMs: 60000,
-            generateHighQualityLinkPreview: true,
+            connectTimeoutMs: 120000,   // ✅ Dakika 2
+            defaultQueryTimeoutMs: 120000, // ✅ Dakika 2
+            keepAliveIntervalMs: 10000, // ✅ Ping kila sekunde 10
         });
 
         sock.ev.on('creds.update', saveCreds);
@@ -77,6 +83,10 @@ async function startBot() {
                 console.log(`🟢 BOT ONLINE - ${sock.user?.id}`);
                 isReconnecting = false;
                 pairingDone = false;
+                if (pairingTimer) {
+                    clearTimeout(pairingTimer);
+                    pairingTimer = null;
+                }
             }
 
             if (connection === 'close') {
@@ -84,8 +94,9 @@ async function startBot() {
                 isReconnecting = false;
 
                 if (pairingDone) {
-                    console.log('⏳ Inasubiri mtumiaji aweke code WhatsApp...');
-                    setTimeout(startBot, 30000);
+                    // ✅ Reconnect haraka ili connection ikae hai
+                    console.log('🔄 Inaendelea kusubiri mtumiaji...');
+                    setTimeout(startBot, 3000);
                     return;
                 }
 
@@ -105,7 +116,7 @@ async function startBot() {
         });
 
         if (!state.creds.registered && !pairingDone) {
-            // ✅ Subiri connection kwanza
+            // Subiri connection kwanza
             await new Promise(resolve => {
                 const handler = (u) => {
                     if (u.connection === 'connecting' || u.connection === 'open') {
@@ -117,13 +128,22 @@ async function startBot() {
                 setTimeout(resolve, 8000);
             });
 
-            // ✅ Pumzika sekunde 3
             await new Promise(r => setTimeout(r, 3000));
 
             try {
                 const code = await sock.requestPairingCode(PHONE_NUMBER);
                 pairingDone = true;
                 displayPairingCode(code);
+
+                // ✅ Baada ya dakika 2 kama haijaunganika, jaribu tena
+                pairingTimer = setTimeout(() => {
+                    console.log('⏰ Dakika 2 zimepita. Inaomba code mpya...');
+                    pairingDone = false;
+                    sock.end();
+                    isReconnecting = false;
+                    setTimeout(startBot, 3000);
+                }, 120000); // ✅ Dakika 2
+
             } catch (err) {
                 console.error('❌ Pairing imeshindwa:', err.message);
                 pairingDone = false;
