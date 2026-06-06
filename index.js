@@ -59,7 +59,7 @@ if (!/^\d{10,15}$/.test(PHONE_NUMBER)) {
 // ─── Bot state ───────────────────────────────────────
 let sock           = null;
 let isConnecting   = false;
-let pairingDone    = false;
+let pairingRequested = false;
 let bootLock       = false;
 let openTimer      = null;
 
@@ -82,29 +82,21 @@ function displayPairingCode(code) {
     log.blank();
 }
 
-// ─── Helper: Wait for socket to be ready ─────────────
-async function waitForSocketReady(maxWaitMs = 15000) {
-    const start = Date.now();
-    while (Date.now() - start < maxWaitMs) {
-        if (sock && sock.ws && sock.ws.readyState === 1) return true;
-        await new Promise(r => setTimeout(r, 200));
-    }
-    return false;
-}
-
 // ─── Anzisha bot ─────────────────────────────────────
 async function startBot() {
     if (bootLock || isConnecting) return;
 
     bootLock     = true;
     isConnecting = true;
-    pairingDone  = false;
+    pairingRequested = false;
     clearOpenTimer();
 
     try {
+        // Pata auth state kutoka PostgreSQL
         const { state, saveCreds } = await usePostgresAuthState(SESSION_ID);
         const { version } = await fetchLatestBaileysVersion();
 
+        // Funga socket ya zamani
         if (sock) {
             try { sock.ev.removeAllListeners(); sock.ws?.close(); } catch {}
             sock = null;
@@ -129,26 +121,21 @@ async function startBot() {
             const { connection, lastDisconnect } = update;
             if (connection) log.state(`Connection  →  ${connection}`);
 
-            // ── Omba pairing code tu ikiwa socket tayari na session haijaregister ──
-            if (connection === 'connecting' && !pairingDone && !state.creds.registered) {
-                pairingDone = true;
-                
-                // Subiri socket iwe tayari (max 15 sec)
-                const ready = await waitForSocketReady(15000);
-                if (!ready) {
-                    log.warn('Socket haikuwa tayari baada ya 15s, pairing itajaribu tena');
-                    pairingDone = false;
-                    return;
-                }
-                
-                try {
-                    log.info('Inaomba pairing code...');
-                    const code = await sock.requestPairingCode(PHONE_NUMBER);
-                    displayPairingCode(code);
-                } catch (err) {
-                    log.error(`Pairing imeshindwa → ${err.message}`);
-                    pairingDone = false;
-                }
+            // ── Omba pairing code (kwa session mpya tu) ──
+            // HAPA NDIO LOGIC YA start.js: setTimeout 3s, pairingRequested, na connection !== 'close'
+            if (!pairingRequested && !state.creds.registered && connection !== 'close') {
+                setTimeout(async () => {
+                    if (pairingRequested) return;
+                    try {
+                        pairingRequested = true;
+                        log.info(`Inaomba pairing code kwa: ${PHONE_NUMBER}`);
+                        const code = await sock.requestPairingCode(PHONE_NUMBER);
+                        displayPairingCode(code);
+                    } catch (err) {
+                        log.error(`Pairing code imeshindwa: ${err.message}`);
+                        pairingRequested = false;
+                    }
+                }, 3000); // ← sekunde 3 kama start.js
             }
 
             // ── Imefunguka ──
@@ -172,8 +159,8 @@ async function startBot() {
                 isConnecting = false;
                 bootLock     = false;
 
-                if (code === DisconnectReason.loggedOut) {
-                    log.warn('Logout halisi — Inafuta session kutoka DB...');
+                if (code === DisconnectReason.loggedOut || code === 401) {
+                    log.warn('Session invalid. Inafuta session kutoka DB...');
                     await deleteSession(SESSION_ID);
                     log.info('Itaanzisha upya baada ya sekunde 10...');
                     setTimeout(startBot, 10000);
@@ -187,6 +174,7 @@ async function startBot() {
             }
         });
 
+        // Timeout - dakika 3
         openTimer = setTimeout(() => {
             log.warn('Muda umekwisha (3 min) — Itaanzisha upya...');
             isConnecting = false;
