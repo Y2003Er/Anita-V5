@@ -5,7 +5,6 @@ const path = require('path');
 const {
     default: makeWASocket,
     DisconnectReason,
-    Browsers,
     useMultiFileAuthState
 } = require('@whiskeysockets/baileys');
 
@@ -34,21 +33,20 @@ let isReconnecting = false;
 let pairingDone = false;
 
 function displayPairingCode(code) {
-    // Onyesha code kwa njia inayoonekana wazi na rahisi kunakili
     console.log('\n');
     console.log('╔══════════════════════════════════╗');
     console.log('║        🔑 PAIRING CODE           ║');
     console.log('╠══════════════════════════════════╣');
-    console.log(`║         ${code}         ║`);
+    console.log(`║       >>  ${code}  <<       ║`);
     console.log('╠══════════════════════════════════╣');
-    console.log('║  📋 NAKILI CODE HAPA JUU          ║');
+    console.log('║  📋 NAKILI CODE HAPA JUU         ║');
     console.log('╚══════════════════════════════════╝');
     console.log('');
-    console.log(`📋 CODE: ${code}`);  // ← Mstari mmoja rahisi kunakili
+    console.log(`📋 CODE: ${code}`);
     console.log('');
-    console.log('👆 Fungua WhatsApp → Settings');
-    console.log('👆 Linked Devices → Link with phone number');
-    console.log('👆 Weka namba yako → Popup itatokea');
+    console.log('👆 WhatsApp → Settings → Linked Devices');
+    console.log('👆 Link a Device → Link with phone number');
+    console.log('👆 Weka namba → Bonyeza CONFIRM kwenye popup');
     console.log('⏳ Una sekunde 60 tu!\n');
 }
 
@@ -63,9 +61,11 @@ async function startBot() {
             auth: state,
             printQRInTerminal: false,
             mobile: false,
-            browser: Browsers.ubuntu('Chrome'),
+            // ✅ Exactly kama WhatsApp Web inavyojionyesha
+            browser: ['Chrome (Ubuntu)', 'Chrome', '121.0.0.0'],
             connectTimeoutMs: 60000,
-            defaultQueryTimeoutMs: 60000
+            defaultQueryTimeoutMs: 60000,
+            generateHighQualityLinkPreview: true,
         });
 
         sock.ev.on('creds.update', saveCreds);
@@ -80,7 +80,7 @@ async function startBot() {
             }
 
             if (connection === 'close') {
-                const code = lastDisconnect?.error?.output?.statusCode;
+                const statusCode = lastDisconnect?.error?.output?.statusCode;
                 isReconnecting = false;
 
                 if (pairingDone) {
@@ -89,9 +89,9 @@ async function startBot() {
                     return;
                 }
 
-                console.log(`🔴 CONNECTION CLOSED (${code})`);
+                console.log(`🔴 CONNECTION CLOSED (${statusCode})`);
 
-                if (code === DisconnectReason.loggedOut) {
+                if (statusCode === DisconnectReason.loggedOut) {
                     console.log('❌ Logged out. Inafuta session...');
                     fs.rmSync(SESSION_DIR, { recursive: true, force: true });
                     fs.mkdirSync(SESSION_DIR, { recursive: true });
@@ -105,6 +105,7 @@ async function startBot() {
         });
 
         if (!state.creds.registered && !pairingDone) {
+            // ✅ Subiri connection kwanza
             await new Promise(resolve => {
                 const handler = (u) => {
                     if (u.connection === 'connecting' || u.connection === 'open') {
@@ -116,13 +117,13 @@ async function startBot() {
                 setTimeout(resolve, 8000);
             });
 
+            // ✅ Pumzika sekunde 3
             await new Promise(r => setTimeout(r, 3000));
 
             try {
                 const code = await sock.requestPairingCode(PHONE_NUMBER);
                 pairingDone = true;
                 displayPairingCode(code);
-
             } catch (err) {
                 console.error('❌ Pairing imeshindwa:', err.message);
                 pairingDone = false;
