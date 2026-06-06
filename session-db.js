@@ -1,3 +1,4 @@
+// session-db.js – Fixed version with binary serialization (base64)
 'use strict';
 
 const { Pool } = require('pg');
@@ -18,12 +19,46 @@ function getPool() {
         ssl: connectionString.includes('localhost') ? false : { rejectUnauthorized: false },
         max: 5,
         idleTimeoutMillis: 30000,
-        connectionTimeoutMillis: 10000,
+        connectionTimeoutMillis: 30000, // increased for public URL
     });
     pool.on('error', (err) => console.error('[session-db] Pool error:', err.message));
     return pool;
 }
 
+// ========== Serialization helpers for Buffer ==========
+function toSerializable(value) {
+    if (Buffer.isBuffer(value)) {
+        return { __type: 'Buffer', data: value.toString('base64') };
+    }
+    if (value && typeof value === 'object') {
+        if (Array.isArray(value)) {
+            return value.map(v => toSerializable(v));
+        }
+        const copy = {};
+        for (const [k, v] of Object.entries(value)) {
+            copy[k] = toSerializable(v);
+        }
+        return copy;
+    }
+    return value;
+}
+
+function fromSerializable(value) {
+    if (value && typeof value === 'object') {
+        if (value.__type === 'Buffer' && typeof value.data === 'string') {
+            return Buffer.from(value.data, 'base64');
+        }
+        if (Array.isArray(value)) {
+            return value.map(v => fromSerializable(v));
+        }
+        for (const k in value) {
+            value[k] = fromSerializable(value[k]);
+        }
+    }
+    return value;
+}
+
+// ========== Database operations ==========
 async function initializeDatabase() {
     const p = getPool();
     try {
@@ -53,7 +88,9 @@ async function dbGet(sessionId, fileKey) {
             `SELECT session_data FROM whatsapp_sessions WHERE session_id = $1 AND file_key = $2`,
             [sessionId, fileKey]
         );
-        return res.rows.length ? res.rows[0].session_data : null;
+        if (!res.rows.length) return null;
+        // Deserialize: convert base64 back to Buffer
+        return fromSerializable(res.rows[0].session_data);
     } catch (err) {
         console.error(`[session-db] dbGet error (${fileKey}):`, err.message);
         return null;
@@ -62,13 +99,15 @@ async function dbGet(sessionId, fileKey) {
 
 async function dbSet(sessionId, fileKey, value) {
     const p = getPool();
+    // Serialize: convert Buffers to base64
+    const serialized = toSerializable(value);
     try {
         await p.query(`
             INSERT INTO whatsapp_sessions (session_id, file_key, session_data, updated_at)
             VALUES ($1, $2, $3::jsonb, NOW())
             ON CONFLICT (session_id, file_key) DO UPDATE
             SET session_data = EXCLUDED.session_data, updated_at = NOW()
-        `, [sessionId, fileKey, JSON.stringify(value)]);
+        `, [sessionId, fileKey, JSON.stringify(serialized)]);
     } catch (err) {
         console.error(`[session-db] dbSet error (${fileKey}):`, err.message);
     }
@@ -83,6 +122,7 @@ async function dbDel(sessionId, fileKey) {
     }
 }
 
+// ========== Baileys auth state ==========
 async function usePostgresAuthState(sessionId) {
     let creds = await dbGet(sessionId, 'creds');
     if (!creds) {
@@ -98,7 +138,7 @@ async function usePostgresAuthState(sessionId) {
             const data = {};
             await Promise.all(ids.map(async (id) => {
                 const fileKey = `${type}--${id}`;
-                const val = await dbGet(sessionId, fileKey);
+                let val = await dbGet(sessionId, fileKey);
                 if (val) {
                     if (type === 'app-state-sync-key') {
                         data[id] = proto.Message.AppStateSyncKeyData.fromObject(val);
@@ -152,15 +192,9 @@ async function sessionExistsInDB(sessionId) {
     } catch { return false; }
 }
 
-// Alias za ushirikiano (kwa matumizi ya awali)
-const initDB = initializeDatabase;
-const clearSession = deleteSession;
-
 module.exports = {
     initializeDatabase,
-    initDB,
     usePostgresAuthState,
     deleteSession,
-    clearSession,
     sessionExistsInDB,
 };
