@@ -12,9 +12,9 @@ const {
 } = require('@whiskeysockets/baileys');
 
 const {
-    initializeDatabase,    // ← sahihi
+    initializeDatabase,
     usePostgresAuthState,
-    deleteSession,         // ← sahihi
+    deleteSession,
 } = require('./session-db');
 
 const logger = pino({ level: 'silent' });
@@ -82,6 +82,16 @@ function displayPairingCode(code) {
     log.blank();
 }
 
+// ─── Helper: Wait for socket to be ready ─────────────
+async function waitForSocketReady(maxWaitMs = 15000) {
+    const start = Date.now();
+    while (Date.now() - start < maxWaitMs) {
+        if (sock && sock.ws && sock.ws.readyState === 1) return true;
+        await new Promise(r => setTimeout(r, 200));
+    }
+    return false;
+}
+
 // ─── Anzisha bot ─────────────────────────────────────
 async function startBot() {
     if (bootLock || isConnecting) return;
@@ -92,11 +102,9 @@ async function startBot() {
     clearOpenTimer();
 
     try {
-        // ── Pata auth state kutoka PostgreSQL (meza imeundwa tayari) ──
         const { state, saveCreds } = await usePostgresAuthState(SESSION_ID);
         const { version } = await fetchLatestBaileysVersion();
 
-        // ── Funga socket ya zamani ──
         if (sock) {
             try { sock.ev.removeAllListeners(); sock.ws?.close(); } catch {}
             sock = null;
@@ -121,24 +129,26 @@ async function startBot() {
             const { connection, lastDisconnect } = update;
             if (connection) log.state(`Connection  →  ${connection}`);
 
-            // ── Omba pairing code (kwa session mpya tu) ──
+            // ── Omba pairing code tu ikiwa socket tayari na session haijaregister ──
             if (connection === 'connecting' && !pairingDone && !state.creds.registered) {
                 pairingDone = true;
-                setTimeout(async () => {
-                    try {
-                        if (!sock || sock.ws?.readyState !== 1) {
-                            log.warn('Socket haijaiva — Pairing itarudiwa...');
-                            pairingDone = false;
-                            return;
-                        }
-                        log.info('Inaomba pairing code...');
-                        const code = await sock.requestPairingCode(PHONE_NUMBER);
-                        displayPairingCode(code);
-                    } catch (err) {
-                        log.error(`Pairing imeshindwa → ${err.message}`);
-                        pairingDone = false;
-                    }
-                }, 5000);
+                
+                // Subiri socket iwe tayari (max 15 sec)
+                const ready = await waitForSocketReady(15000);
+                if (!ready) {
+                    log.warn('Socket haikuwa tayari baada ya 15s, pairing itajaribu tena');
+                    pairingDone = false;
+                    return;
+                }
+                
+                try {
+                    log.info('Inaomba pairing code...');
+                    const code = await sock.requestPairingCode(PHONE_NUMBER);
+                    displayPairingCode(code);
+                } catch (err) {
+                    log.error(`Pairing imeshindwa → ${err.message}`);
+                    pairingDone = false;
+                }
             }
 
             // ── Imefunguka ──
@@ -177,7 +187,6 @@ async function startBot() {
             }
         });
 
-        // Timeout - dakika 3
         openTimer = setTimeout(() => {
             log.warn('Muda umekwisha (3 min) — Itaanzisha upya...');
             isConnecting = false;
@@ -204,7 +213,7 @@ async function startBot() {
 (async () => {
     try {
         log.info(`Inaunganika na PostgreSQL...`);
-        await initializeDatabase();  // ← sahihi
+        await initializeDatabase();
         log.blank();
         await startBot();
     } catch (err) {
