@@ -13,8 +13,7 @@ const {
     makeCacheableSignalKeyStore,
 } = require('@whiskeysockets/baileys');
 
-// Logger inayoonyesha kila undani (trace) kwa uchunguzi
-const logger = pino({ level: 'trace' });
+const logger = pino({ level: 'silent' }); // silent ili logs zisichanganye console
 
 const SESSION_DIR = path.resolve(process.env.SESSION_DIR || './session');
 const PHONE_NUMBER = process.env.PHONE_NUMBER?.trim();
@@ -56,7 +55,7 @@ function displayPairingCode(code) {
     console.log('╠══════════════════════════╣');
     console.log(`║      ${code}      ║`);
     console.log('╚══════════════════════════╝');
-    console.log(`\n📋 CODE: ${code}\n`); // ✅ FIXED SYNTAX HERE
+    console.log(`\n📋 CODE: ${code}\n`);
     console.log('👆 WhatsApp → Linked Devices → Link a Device');
     console.log('👆 Link with phone number → Weka namba yako');
     console.log('👆 Popup itatokea yenyewe — bonyeza CONFIRM\n');
@@ -96,10 +95,28 @@ async function startBot() {
 
         sock.ev.on('creds.update', saveCreds);
 
+        // ✅ FIX KUBWA: Omba pairing code wakati WS inafunguka
         sock.ev.on('connection.update', async (update) => {
-            const { connection, lastDisconnect } = update;
+            const { connection, lastDisconnect, isNewLogin, qr } = update;
 
-            console.log('🔄 State:', connection);
+            console.log('🔄 State:', connection ?? 'connecting...');
+
+            // Omba pairing code mara tu muunganisho unaanza (kabla ya 'open')
+            if (!pairingRequested && !state.creds.registered && connection !== 'close') {
+                // Subiri kidogo ili WS ifike ready state
+                setTimeout(async () => {
+                    if (pairingRequested) return;
+                    try {
+                        pairingRequested = true;
+                        console.log(`📱 Inaomba pairing code kwa: ${PHONE_NUMBER}`);
+                        const code = await sock.requestPairingCode(PHONE_NUMBER);
+                        displayPairingCode(code);
+                    } catch (err) {
+                        console.error('❌ Pairing code imeshindwa:', err.message);
+                        pairingRequested = false;
+                    }
+                }, 3000);
+            }
 
             if (connection === 'open') {
                 clearOpenTimer();
@@ -115,14 +132,14 @@ async function startBot() {
 
                 console.log('\n════ DISCONNECT INFO ════');
                 console.log('Code:', statusCode);
-                console.log(JSON.stringify(lastDisconnect, null, 2));
+                console.log(JSON.stringify(lastDisconnect?.error?.output, null, 2));
                 console.log('════════════════════════\n');
 
                 isConnecting = false;
                 bootLock = false;
 
                 if (statusCode === DisconnectReason.loggedOut || statusCode === 401) {
-                    console.log('❌ Session invalid. Inafuta...');
+                    console.log('❌ Session invalid. Inafuta na kuanza upya...');
                     fs.rmSync(SESSION_DIR, { recursive: true, force: true });
                     fs.mkdirSync(SESSION_DIR, { recursive: true });
                 }
@@ -131,6 +148,7 @@ async function startBot() {
             }
         });
 
+        // ✅ Timeout ya kufunga kama haikufunguka
         openTimer = setTimeout(() => {
             console.log('⏰ Haikufunguka kwa sekunde 90. Restarting...');
             isConnecting = false;
@@ -149,7 +167,7 @@ async function startBot() {
         if (state.creds.registered) {
             console.log('✅ Session ipo. Inaunganisha...');
         } else {
-            console.log('⏳ Inasubiri muunganisho wa kwanza (max 90s)...');
+            console.log('⏳ Session mpya. Inasubiri pairing code...');
         }
 
     } catch (err) {
