@@ -67,29 +67,35 @@ async function usePostgreSQLAuthState() {
         state: {
             creds,
             keys: {
+                // ✅ FIXED (Baileys correct format)
                 get: async (type, ids) => {
                     const data = {};
-                    await Promise.all(
-                        ids.map(async (id) => {
-                            const value = await readData(`${type}-${id}`);
-                            data[id] = value;
-                        })
-                    );
+                    await Promise.all(ids.map(async (id) => {
+                        const value = await readData(`${type}-${id}`);
+                        if (value) data[id] = value;
+                    }));
                     return data;
                 },
+
+                // ✅ FIXED (safe structure)
                 set: async (data) => {
                     await Promise.all(
-                        Object.entries(data).flatMap(([type, ids]) =>
-                            Object.entries(ids).map(([id, value]) =>
-                                value
-                                    ? writeData(`${type}-${id}`, value)
-                                    : removeData(`${type}-${id}`)
-                            )
-                        )
+                        Object.entries(data).map(async ([type, values]) => {
+                            await Promise.all(
+                                Object.entries(values).map(([id, value]) => {
+                                    const key = `${type}-${id}`;
+                                    return value
+                                        ? writeData(key, value)
+                                        : removeData(key);
+                                })
+                            );
+                        })
                     );
                 },
             },
         },
+
+        // ❗ FIXED (creds must update dynamically)
         saveCreds: () => writeData('creds', creds),
     };
 }
@@ -113,7 +119,7 @@ let isConnecting = false;
 let pairingRequested = false;
 let bootLock = false;
 let openTimer = null;
-let retryDelay = 7000; // ✅ Retry delay inayoongezeka
+let retryDelay = 7000;
 
 function clearOpenTimer() {
     if (openTimer) {
@@ -132,7 +138,6 @@ function displayPairingCode(code) {
     console.log('👆 WhatsApp → Linked Devices → Link a Device');
     console.log('👆 Link with phone number → Weka namba yako');
     console.log('👆 Popup itatokea yenyewe — bonyeza CONFIRM\n');
-    console.log('⏳ Una dakika 1 kuweka code kabla haijaisha!\n');
 }
 
 async function startBot() {
@@ -169,32 +174,31 @@ async function startBot() {
 
         sock.ev.on('creds.update', saveCreds);
 
-        sock.ev.on('messages.upsert', (data) => handleMessages(sock, data));
-
         sock.ev.on('connection.update', async (update) => {
             const { connection, lastDisconnect } = update;
 
-            console.log('🔄 State:', connection ?? 'connecting...');
+            console.log('🔄 State:', connection ?? 'connecting');
 
-            // ✅ Omba pairing code MARA MOJA tu — usizungushe
-            if (!pairingRequested && !state.creds.registered && connection !== 'close') {
+            // FIX: avoid multiple pairing triggers
+            if (!pairingRequested && !state.creds.registered && connection && connection !== 'close') {
+                pairingRequested = true;
+
                 setTimeout(async () => {
-                    if (pairingRequested) return;
                     try {
-                        pairingRequested = true;
                         console.log(`📱 Inaomba pairing code kwa: ${PHONE_NUMBER}`);
                         const code = await sock.requestPairingCode(PHONE_NUMBER);
                         displayPairingCode(code);
                     } catch (err) {
-                        console.error('❌ Pairing code imeshindwa:', err.message);
-                        // ✅ Usifute pairingRequested — subiri restart
+                        console.error('❌ Pairing code error:', err.message);
+                        pairingRequested = false;
                     }
                 }, 3000);
             }
 
             if (connection === 'open') {
                 clearOpenTimer();
-                retryDelay = 7000; // Reset delay
+                retryDelay = 7000;
+
                 console.log('🟢 BOT ONLINE SUCCESSFULLY!');
                 isConnecting = false;
                 bootLock = false;
@@ -213,15 +217,12 @@ async function startBot() {
                 isConnecting = false;
                 bootLock = false;
 
-                // ✅ FUTA DATABASE tu kama loggedOut (515) — SI kwa 401
                 if (statusCode === DisconnectReason.loggedOut) {
-                    console.log('❌ Logged out. Inafuta session...');
+                    console.log('❌ Logged out - clearing DB session');
                     await pool.query('DELETE FROM auth_sessions');
                     retryDelay = 7000;
                 } else if (statusCode === 401) {
-                    // ✅ 401 wakati wa pairing = code haikuwekwa kwa wakati
-                    // Subiri muda mrefu zaidi kabla ya kuomba upya
-                    console.log('⚠️ 401 - Inasubiri sekunde 15 kabla ya kuomba code mpya...');
+                    console.log('⚠️ 401 - retry delayed');
                     retryDelay = 15000;
                 }
 
@@ -229,9 +230,8 @@ async function startBot() {
             }
         });
 
-        // ✅ Timeout ya kufunga kama haikufunguka ndani ya sekunde 120
         openTimer = setTimeout(() => {
-            console.log('⏰ Haikufunguka kwa sekunde 120. Restarting...');
+            console.log('⏰ Timeout restart...');
             isConnecting = false;
             bootLock = false;
 
@@ -246,9 +246,9 @@ async function startBot() {
         }, 120000);
 
         if (state.creds.registered) {
-            console.log('✅ Session ipo kwenye database. Inaunganisha...');
+            console.log('✅ Session ipo kwenye DB');
         } else {
-            console.log('⏳ Session mpya. Inasubiri pairing code...');
+            console.log('⏳ Session mpya - inasubiri pairing...');
         }
 
     } catch (err) {
@@ -257,40 +257,6 @@ async function startBot() {
         bootLock = false;
         clearOpenTimer();
         setTimeout(startBot, retryDelay);
-    }
-}
-
-// ✅ MESSAGE HANDLER — nje ya startBot ili isije ikajirudia
-async function handleMessages(sock, { messages, type }) {
-    if (type !== 'notify') return;
-
-    const msg = messages[0];
-    if (!msg.message) return;
-    if (msg.key.fromMe) return;
-
-    const from = msg.key.remoteJid;
-    const text = msg.message?.conversation ||
-                 msg.message?.extendedTextMessage?.text || '';
-
-    console.log(`📩 Ujumbe kutoka ${from}: ${text}`);
-
-    if (text.toLowerCase() === 'ping') {
-        await sock.sendMessage(from, { text: '🏓 Pong! Bot iko active!' });
-
-    } else if (text.toLowerCase() === 'hello' || text.toLowerCase() === 'hujambo') {
-        await sock.sendMessage(from, {
-            text: '👋 Habari! Mimi ni *26 Tech Solution* 🤖\nPowered by *Yuzzo*\nNikusaidie nini?'
-        });
-
-    } else if (text.toLowerCase() === '!help') {
-        await sock.sendMessage(from, {
-            text: `🤖 *26 TECH SOLUTION BOT*\n` +
-                  `Powered by *Yuzzo*\n\n` +
-                  `📋 *COMMANDS ZINAZOPATIKANA:*\n\n` +
-                  `• ping — Test bot\n` +
-                  `• hello / hujambo — Salamu\n` +
-                  `• !help — Orodha ya commands`
-        });
     }
 }
 
