@@ -77,8 +77,21 @@ async function startBot() {
         });
 
         if (!state.creds.registered) {
-            console.log('⏳ Inasubiri sekunde 6 kabla ya pairing...');
-            await new Promise(r => setTimeout(r, 6000));
+            // Subiri connection iwe "connecting" kwanza kabla ya pairing
+            await new Promise(resolve => {
+                const handler = (u) => {
+                    if (u.connection === 'connecting' || u.connection === 'open') {
+                        sock.ev.off('connection.update', handler);
+                        resolve();
+                    }
+                };
+                sock.ev.on('connection.update', handler);
+                setTimeout(resolve, 8000); // backup timeout
+            });
+
+            // Pumzika sekunde 3 zaidi ili socket iwe stable
+            await new Promise(r => setTimeout(r, 3000));
+
             try {
                 const code = await sock.requestPairingCode(PHONE_NUMBER);
                 console.log(`\n🔑 PAIRING CODE: ${code}`);
