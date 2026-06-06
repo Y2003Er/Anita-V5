@@ -7,7 +7,8 @@ const {
     DisconnectReason,
     useMultiFileAuthState,
     fetchLatestBaileysVersion,
-    makeCacheableSignalKeyStore
+    makeCacheableSignalKeyStore,
+    PHONENUMBER_MCC
 } = require('@whiskeysockets/baileys');
 
 const SESSION_DIR = path.resolve(process.env.SESSION_DIR || './session');
@@ -18,6 +19,7 @@ if (!fs.existsSync(SESSION_DIR)) fs.mkdirSync(SESSION_DIR, { recursive: true });
 fs.readdirSync(SESSION_DIR).forEach(file => {
     if (!file.endsWith('.json')) {
         fs.unlinkSync(path.join(SESSION_DIR, file));
+        console.log(`⚠️ Removed junk file: ${file}`);
     }
 });
 
@@ -30,9 +32,15 @@ if (!PHONE_NUMBER) {
     process.exit(1);
 }
 
+const mcc = PHONENUMBER_MCC?.['255'];
+if (!mcc) {
+    console.log('⚠️ Tanzania MCC haipatikani - itaendelea bila MCC check');
+}
+
 let isReconnecting = false;
 let pairingDone = false;
 let pairingTimer = null;
+let currentSock = null;
 
 function displayPairingCode(code) {
     console.log('\n');
@@ -43,10 +51,12 @@ function displayPairingCode(code) {
     console.log('╠══════════════════════════════════╣');
     console.log('║  📋 NAKILI CODE HAPA JUU         ║');
     console.log('╚══════════════════════════════════╝');
-    console.log(`\n📋 CODE: ${code}\n`);
+    console.log('');
+    console.log(`📋 CODE: ${code}`);
+    console.log('');
     console.log('⚠️  WhatsApp itatoa POPUP yenyewe!');
     console.log('👆 Settings → Linked Devices → Link a Device');
-    console.log('👆 Link with phone number → Weka namba yako');
+    console.log('👆 Link with phone number → Weka namba');
     console.log('👆 Bonyeza CONFIRM kwenye popup\n');
 }
 
@@ -61,7 +71,8 @@ async function startBot() {
 
     try {
         const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
-        const { version } = await fetchLatestBaileysVersion();
+        const { version, isLatest } = await fetchLatestBaileysVersion();
+        console.log(`📱 WA version: ${version.join('.')} latest: ${isLatest}`);
 
         const sock = makeWASocket({
             version,
@@ -74,63 +85,54 @@ async function startBot() {
             browser: ['Chrome (Ubuntu)', 'Chrome', '121.0.0.0'],
             connectTimeoutMs: 120000,
             defaultQueryTimeoutMs: 120000,
-            keepAliveIntervalMs: 15000,
+            keepAliveIntervalMs: 10000,
+            retryRequestDelayMs: 2000,
+            maxMsgRetryCount: 5,
         });
 
+        currentSock = sock;
         sock.ev.on('creds.update', saveCreds);
 
-        if (!state.creds.registered && !pairingDone) {
-            await new Promise(resolve => {
-                sock.ev.on('connection.update', function once(u) {
-                    if (u.connection) {
-                        sock.ev.off('connection.update', once);
-                        resolve();
-                    }
-                });
-                setTimeout(resolve, 2000);
-            });
-
-            try {
-                console.log('⚡ Inaomba pairing code...');
-                const code = await sock.requestPairingCode(PHONE_NUMBER);
-                pairingDone = true;
-                displayPairingCode(code);
-
-                pairingTimer = setTimeout(async () => {
-                    if (!state.creds.registered) {
-                        console.log('⏰ Code imekwisha. Inaomba mpya...');
-                        try {
-                            const newCode = await sock.requestPairingCode(PHONE_NUMBER);
-                            displayPairingCode(newCode);
-                        } catch(e) {
-                            console.log('🔄 Inaanzisha upya...');
-                            pairingDone = false;
-                            sock.end();
-                            isReconnecting = false;
-                            setTimeout(startBot, 3000);
-                        }
-                    }
-                }, 90000);
-
-            } catch (err) {
-                console.error('❌ Pairing imeshindwa:', err.message);
-                pairingDone = false;
-                isReconnecting = false;
-                sock.end();
-                setTimeout(startBot, 5000);
-                return;
-            }
-        } else if (state.creds.registered) {
-            console.log('✅ Session ipo. Inaunganisha...');
-        }
+        let pairingRequested = false;
 
         sock.ev.on('connection.update', async (update) => {
             const { connection, lastDisconnect } = update;
+
+            console.log(`🔄 Connection state: ${connection || 'unknown'}`);
+
+            if (connection === 'connecting' && !pairingRequested && !pairingDone && !state.creds.registered) {
+                pairingRequested = true;
+                console.log('⚡ Inaomba pairing code mara moja...');
+
+                await new Promise(r => setTimeout(r, 1500));
+
+                try {
+                    const code = await sock.requestPairingCode(PHONE_NUMBER);
+                    pairingDone = true;
+                    displayPairingCode(code);
+
+                    pairingTimer = setTimeout(() => {
+                        console.log('⏰ Dakika 2 zimepita. Code mpya...');
+                        pairingDone = false;
+                        pairingRequested = false;
+                        sock.end();
+                        isReconnecting = false;
+                        setTimeout(startBot, 3000);
+                    }, 120000);
+
+                } catch (err) {
+                    console.error('❌ Pairing imeshindwa:', err.message);
+                    pairingDone = false;
+                    pairingRequested = false;
+                    isReconnecting = false;
+                }
+            }
 
             if (connection === 'open') {
                 console.log(`🟢 BOT ONLINE - ${sock.user?.id}`);
                 isReconnecting = false;
                 pairingDone = false;
+                pairingRequested = false;
                 if (pairingTimer) {
                     clearTimeout(pairingTimer);
                     pairingTimer = null;
@@ -167,6 +169,10 @@ async function startBot() {
                 setTimeout(startBot, 5000);
             }
         });
+
+        if (state.creds.registered) {
+            console.log('✅ Session ipo. Inaunganisha...');
+        }
 
     } catch (err) {
         console.error('BOT ERROR:', err);
