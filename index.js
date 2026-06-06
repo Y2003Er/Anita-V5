@@ -1,75 +1,84 @@
 'use strict';
 require('dotenv').config();
-const fs = require('fs');
-const path = require('path');
-const chalk = require('chalk');
 const { default: makeWASocket, DisconnectReason, Browsers } = require('@whiskeysockets/baileys');
+const { usePostgreSQLAuthState } = require('@whiskeysockets/baileys');
+const { Pool } = require('pg');
 
-const SESSION_FILE = path.join(process.cwd(), 'session.json');
-const PHONE_NUMBER = process.env.PHONE_NUMBER ? process.env.PHONE_NUMBER.trim() : null;
+const PHONE_NUMBER = process.env.PHONE_NUMBER?.trim();
+const DATABASE_URL = process.env.DATABASE_URL;
 
-console.log(chalk.green('=============================='));
-console.log(chalk.green('  QUEEN_ANITA-V5 STARTING  '));
-console.log(chalk.green('=============================='));
+if (!DATABASE_URL) {
+    console.error('❌ DATABASE_URL haipo! Hakikisha Postgres imeunganishwa.');
+    process.exit(1);
+}
+
+const pool = new Pool({ connectionString: DATABASE_URL });
+
+console.log('==============================');
+console.log('  QUEEN_ANITA-V5 STARTING  ');
+console.log('==============================');
 
 let sock;
-let isPairingRequested = false;
+let isPairing = false;
 
 async function startBot() {
-    let authState = { creds: {}, keys: {} };
-    if (fs.existsSync(SESSION_FILE)) {
-        try {
-            const data = JSON.parse(fs.readFileSync(SESSION_FILE, 'utf-8'));
-            authState = { creds: data.creds || {}, keys: data.keys || {} };
-        } catch (e) {
-            console.log(chalk.yellow('⚠️ Session file imeharibika, itafutwa...'));
-            fs.unlinkSync(SESSION_FILE);
-        }
-    }
+    try {
+        // Tumia PostgreSQL kuhifadhi session (inadumu milele)
+        const { state, saveCreds } = await usePostgreSQLAuthState(pool, 'anita_session');
 
-    sock = makeWASocket({
-        auth: {
-            creds: authState.creds,
-            keys: authState.keys,
-            saveCreds: () => {
-                const newState = { creds: sock.authState.creds, keys: sock.authState.keys };
-                fs.writeFileSync(SESSION_FILE, JSON.stringify(newState, null, 2));
-                console.log(chalk.green('💾 Session imehifadhiwa'));
-            }
-        },
-        printQRInTerminal: false,
-        browser: Browsers.windows('Chrome'),
-        connectTimeoutMs: 60000,
-        defaultQueryTimeoutMs: 60000
-    });
+        sock = makeWASocket({
+            auth: state,
+            printQRInTerminal: false,
+            browser: Browsers.windows('Chrome'),
+            connectTimeoutMs: 60000,
+            defaultQueryTimeoutMs: 60000
+        });
 
-    sock.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect } = update;
-        if (connection === 'open') {
-            console.log(chalk.green(`🟢 BOT ONLINE - ${sock.user?.id || 'unknown'}`));
-            isPairingRequested = false;
-        }
-        if (connection === 'close') {
-            const statusCode = lastDisconnect?.error?.output?.statusCode;
-            console.log(chalk.red(`🔴 CONNECTION CLOSED (${statusCode})`));
-            if (statusCode !== DisconnectReason.loggedOut) {
-                console.log(chalk.yellow('🔄 Reconnecting in 5 seconds...'));
-                setTimeout(startBot, 5000);
-            } else {
-                console.log(chalk.red('❌ Logged out. Futa session.json na uanze upya.'));
+        sock.ev.on('creds.update', saveCreds);
+
+        sock.ev.on('connection.update', async (update) => {
+            const { connection, lastDisconnect } = update;
+
+            if (connection === 'open') {
+                console.log(`🟢 BOT ONLINE - ${sock.user?.id || 'unknown'}`);
+                isPairing = false;
             }
-        }
-        if (!sock.authState.creds.registered && !isPairingRequested && PHONE_NUMBER) {
-            isPairingRequested = true;
-            console.log(chalk.blue('⏳ Inaomba pairing code...'));
+
+            if (connection === 'close') {
+                const code = lastDisconnect?.error?.output?.statusCode;
+                console.log(`🔴 CONNECTION CLOSED (${code})`);
+                if (code !== DisconnectReason.loggedOut) {
+                    setTimeout(startBot, 5000);
+                } else {
+                    console.log('❌ Logged out. Futa database entry na uanze upya.');
+                }
+            }
+        });
+
+        // Omba pairing code ikiwa session haijasajiliwa
+        if (!state.creds.registered && !isPairing && PHONE_NUMBER) {
+            isPairing = true;
+            console.log('⏳ Inaomba pairing code...');
+            await new Promise(r => setTimeout(r, 2000));
             try {
                 const code = await sock.requestPairingCode(PHONE_NUMBER);
-                console.log(chalk.green(`🔑 PAIRING CODE: ${code}`));
+                console.log(`🔑 PAIRING CODE: ${code}`);
+                console.log('💡 Ingiza code kwenye WhatsApp > Linked Devices');
             } catch (err) {
-                console.error(chalk.red('❌ Pairing error:'), err.message);
+                console.error('❌ Pairing error:', err.message);
             }
+        } else if (!state.creds.registered) {
+            console.log('❌ Hakuna PHONE_NUMBER kwenye .env');
+            process.exit(1);
+        } else {
+            console.log('✅ Session ipo kwenye database. Hakuna pairing.');
         }
-    });
-    console.log(chalk.yellow('[✓] Bot initializing...'));
+
+        console.log('[✓] Bot initializing...');
+    } catch (err) {
+        console.error('BOT ERROR:', err);
+        setTimeout(startBot, 5000);
+    }
 }
+
 startBot();
