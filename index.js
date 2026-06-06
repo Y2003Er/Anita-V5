@@ -1,7 +1,5 @@
 'use strict';
 
-const fs = require('fs');
-const path = require('path');
 const dotenv = require('dotenv');
 dotenv.config();
 
@@ -9,18 +7,23 @@ const pino = require('pino');
 const {
     default: makeWASocket,
     DisconnectReason,
-    useMultiFileAuthState,
     fetchLatestBaileysVersion,
     makeCacheableSignalKeyStore,
 } = require('@whiskeysockets/baileys');
 
+const {
+    initDB,
+    usePostgresAuthState,
+    clearSession,
+} = require('./session-db');
+
 const logger = pino({ level: 'silent' });
 
-const SESSION_DIR = path.resolve(process.env.SESSION_DIR || './session');
+const SESSION_ID   = process.env.SESSION_ID || 'queen_anita_v5';
 const PHONE_NUMBER = process.env.PHONE_NUMBER?.trim();
 
 // ─────────────────────────────────────────────────
-//   LOGGER UTILITY
+//   LOGGER
 // ─────────────────────────────────────────────────
 const log = {
     info:    (msg) => console.log(`  ✦  ${msg}`),
@@ -32,21 +35,26 @@ const log = {
     blank:   ()    => console.log(''),
 };
 
-if (!fs.existsSync(SESSION_DIR)) {
-    fs.mkdirSync(SESSION_DIR, { recursive: true });
-}
-
 // ─────────────────────────────────────────────────
-//   BOOT BANNER
+//   BANNER
 // ─────────────────────────────────────────────────
 log.blank();
 console.log('  ╔════════════════════════════════════════════╗');
 console.log('  ║                                            ║');
 console.log('  ║       QUEEN_ANITA-V5   ·   RUNTIME         ║');
 console.log('  ║       WhatsApp Bot   ·   Baileys            ║');
+console.log('  ║       Session  ·   PostgreSQL (Railway)     ║');
 console.log('  ║                                            ║');
 console.log('  ╚════════════════════════════════════════════╝');
 log.blank();
+
+// ─────────────────────────────────────────────────
+//   VALIDATIONS
+// ─────────────────────────────────────────────────
+if (!process.env.DATABASE_URL) {
+    log.error('DATABASE_URL haipo kwenye .env — Bot imesimama.');
+    process.exit(1);
+}
 
 if (!PHONE_NUMBER) {
     log.error('PHONE_NUMBER haipo kwenye .env — Bot imesimama.');
@@ -54,15 +62,18 @@ if (!PHONE_NUMBER) {
 }
 
 if (!/^\d{10,15}$/.test(PHONE_NUMBER)) {
-    log.error('PHONE_NUMBER si sahihi — Angalia format (255...)');
+    log.error('PHONE_NUMBER si sahihi — Angalia format (255617155222)');
     process.exit(1);
 }
 
-let sock = null;
-let isConnecting = false;
-let pairingRequested = false;
-let bootLock = false;
-let openTimer = null;
+// ─────────────────────────────────────────────────
+//   BOT STATE
+// ─────────────────────────────────────────────────
+let sock           = null;
+let isConnecting   = false;
+let pairingDone    = false;
+let bootLock       = false;
+let openTimer      = null;
 
 function clearOpenTimer() {
     if (openTimer) clearTimeout(openTimer);
@@ -79,124 +90,138 @@ function displayPairingCode(code) {
     console.log('  │                                            │');
     console.log('  └────────────────────────────────────────────┘');
     log.blank();
-    log.info(`Pair Code      →  ${code}`);
-    log.blank();
     log.info('WhatsApp  →  Linked Devices  →  Link a Device');
     log.info('Chagua    →  Link with phone number');
     log.info('Ingiza nambari yako  →  Bonyeza Confirm');
     log.blank();
 }
 
+// ─────────────────────────────────────────────────
+//   ANZISHA BOT
+// ─────────────────────────────────────────────────
 async function startBot() {
     if (bootLock || isConnecting) return;
 
-    bootLock = true;
+    bootLock     = true;
     isConnecting = true;
-    pairingRequested = false;
+    pairingDone  = false;
     clearOpenTimer();
 
     try {
-        const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
-        const { version } = await fetchLatestBaileysVersion();
+        // ── Pata auth state kutoka PostgreSQL ──
+        const { state, saveCreds } = await usePostgresAuthState(SESSION_ID);
+        const { version }          = await fetchLatestBaileysVersion();
 
+        // ── Funga socket ya zamani ──
         if (sock) {
-            try {
-                sock.ev.removeAllListeners();
-                sock.ws?.close();
-            } catch {}
+            try { sock.ev.removeAllListeners(); sock.ws?.close(); } catch {}
             sock = null;
         }
 
+        // ── Unda socket mpya ──
         sock = makeWASocket({
             version,
-            auth: state,
+            auth: {
+                creds: state.creds,
+                keys:  makeCacheableSignalKeyStore(state.keys, logger),
+            },
             logger,
             printQRInTerminal: false,
-            browser: ['Ubuntu', 'Chrome', '120.0.0'],
-            connectTimeoutMs: 60000,
-            keepAliveIntervalMs: 30000,
+            browser:               ['Ubuntu', 'Chrome', '120.0.0'],
+            connectTimeoutMs:      60_000,
+            keepAliveIntervalMs:   25_000,
+            retryRequestDelayMs:   2_000,
+            maxMsgRetryCount:      5,
+            syncFullHistory:       false,
         });
 
+        // ── Hifadhi creds zikibadilika ──
         sock.ev.on('creds.update', saveCreds);
 
+        // ── Sikiliza mabadiliko ya muunganiko ──
         sock.ev.on('connection.update', async (update) => {
             const { connection, lastDisconnect } = update;
 
-            log.state(`Connection  →  ${connection}`);
+            if (connection) log.state(`Connection  →  ${connection}`);
 
-            if (
-                connection === 'connecting' &&
-                !pairingRequested &&
-                !state.creds.registered
-            ) {
-                pairingRequested = true;
+            // ── Omba pairing code (session mpya tu) ──
+            if (connection === 'connecting' && !pairingDone && !state.creds.registered) {
+                pairingDone = true;
 
                 setTimeout(async () => {
                     try {
                         if (!sock || sock.ws?.readyState !== 1) {
-                            log.warn('Socket haijaiva — Pairing itarudiwa hivi karibuni...');
-                            pairingRequested = false;
+                            log.warn('Socket haijaiva — Pairing itarudiwa...');
+                            pairingDone = false;
                             return;
                         }
-
-                        log.info('Inaomba pairing code kwa nambari iliyowekwa...');
+                        log.info('Inaomba pairing code...');
                         const code = await sock.requestPairingCode(PHONE_NUMBER);
                         displayPairingCode(code);
-
                     } catch (err) {
-                        log.error(`Pairing imeshindwa  →  ${err.message}`);
-                        pairingRequested = false;
+                        log.error(`Pairing imeshindwa → ${err.message}`);
+                        pairingDone = false;
                     }
-                }, 8000);
+                }, 5000);
             }
 
+            // ── Imeunganika ──
             if (connection === 'open') {
                 clearOpenTimer();
                 log.div();
-                log.success('BOT IMEUNGANIKA — INAENDESHA VIZURI');
+                log.success('BOT IMEUNGANIKA ✔');
+                log.success('Session imehifadhiwa kwenye PostgreSQL (Railway)');
                 log.div();
                 isConnecting = false;
-                bootLock = false;
+                bootLock     = false;
             }
 
+            // ── Muunganiko umevunjika ──
             if (connection === 'close') {
                 clearOpenTimer();
 
-                const statusCode = lastDisconnect?.error?.output?.statusCode;
+                const code    = lastDisconnect?.error?.output?.statusCode;
+                const reason  = lastDisconnect?.error?.message || 'unknown';
 
                 log.div();
-                log.error(`Muunganiko Umevunjika  →  Status ${statusCode ?? 'unknown'}`);
+                log.error(`Muunganiko Umevunjika  →  [${code ?? '?'}] ${reason}`);
 
                 isConnecting = false;
-                bootLock = false;
+                bootLock     = false;
 
-                if (statusCode === DisconnectReason.loggedOut) {
-                    log.warn('Session imefutwa — Itaanzisha upya...');
-                    fs.rmSync(SESSION_DIR, { recursive: true, force: true });
-                    fs.mkdirSync(SESSION_DIR, { recursive: true });
+                if (code === DisconnectReason.loggedOut) {
+                    log.warn('Logout halisi — Inafuta session kutoka DB...');
+                    await clearSession(SESSION_ID);
+                    log.info('Itaanzisha upya baada ya sekunde 10...');
+                    setTimeout(startBot, 10_000);
+
+                } else if (code === 405) {
+                    log.error('Nambari imezuiwa na WhatsApp — Subiri dakika 5.');
+                    setTimeout(startBot, 5 * 60_000);
+
+                } else if (!code || code === 408 || code === 503) {
+                    log.info('Hitilafu ya mtandao — Inajaribu tena baada ya sekunde 5...');
+                    setTimeout(startBot, 5_000);
+
+                } else {
+                    log.info(`Inajaribu tena baada ya sekunde 7... [${code}]`);
+                    setTimeout(startBot, 7_000);
                 }
-
-                log.info('Inajaribu kuunganika tena baada ya sekunde 7...');
-                log.div();
-                setTimeout(startBot, 7000);
             }
         });
 
+        // ── Timeout — dakika 3 ──
         openTimer = setTimeout(() => {
-            log.warn('Muda umekwisha — Bot itaanzisha upya...');
+            log.warn('Muda umekwisha (3 min) — Itaanzisha upya...');
             isConnecting = false;
-            bootLock = false;
+            bootLock     = false;
+            try { sock?.ev?.removeAllListeners(); sock?.ws?.close(); } catch {}
+            setTimeout(startBot, 7_000);
+        }, 180_000);
 
-            try {
-                sock?.ev?.removeAllListeners();
-                sock?.ws?.close();
-            } catch {}
-
-            setTimeout(startBot, 7000);
-        }, 120000);
-
+        // ── Log hali ya session ──
         if (state.creds.registered) {
-            log.success('Session inapatikana — Inaunganika...');
+            log.success('Session ipo DB — Inaunganika bila pairing...');
         } else {
             log.info('Session mpya — Inasubiri pairing code...');
         }
@@ -206,9 +231,23 @@ async function startBot() {
         log.error(`HITILAFU KUBWA  →  ${err.message}`);
         log.div();
         isConnecting = false;
-        bootLock = false;
-        setTimeout(startBot, 7000);
+        bootLock     = false;
+        setTimeout(startBot, 7_000);
     }
 }
 
-startBot();
+// ─────────────────────────────────────────────────
+//   ENTRY POINT — DB kwanza, kisha bot
+// ─────────────────────────────────────────────────
+(async () => {
+    try {
+        log.info(`Inaunganika na PostgreSQL...`);
+        await initDB();
+        log.blank();
+        await startBot();
+    } catch (err) {
+        log.error(`DB imeshindwa kuunganika: ${err.message}`);
+        log.error('Angalia DATABASE_URL kwenye Railway Variables.');
+        process.exit(1);
+    }
+})();
