@@ -12,10 +12,8 @@ const {
 const SESSION_DIR = path.resolve(process.env.SESSION_DIR || './session');
 const PHONE_NUMBER = process.env.PHONE_NUMBER?.trim();
 
-// Unda session folder kama haipo
 if (!fs.existsSync(SESSION_DIR)) fs.mkdirSync(SESSION_DIR, { recursive: true });
 
-// Futa files zisizo za JSON kwenye session
 fs.readdirSync(SESSION_DIR).forEach(file => {
     if (!file.endsWith('.json')) {
         fs.unlinkSync(path.join(SESSION_DIR, file));
@@ -33,6 +31,7 @@ if (!PHONE_NUMBER) {
 }
 
 let isReconnecting = false;
+let pairingDone = false; // ✅ Zuia pairing kurudiwa
 
 async function startBot() {
     if (isReconnecting) return;
@@ -57,17 +56,29 @@ async function startBot() {
             if (connection === 'open') {
                 console.log(`🟢 BOT ONLINE - ${sock.user?.id}`);
                 isReconnecting = false;
+                pairingDone = false;
             }
 
             if (connection === 'close') {
                 const code = lastDisconnect?.error?.output?.statusCode;
-                console.log(`🔴 CONNECTION CLOSED (${code})`);
                 isReconnecting = false;
+
+                // ✅ Kama pairing imefanywa, subiri mtumiaji aweke code
+                // Usireconnect haraka haraka
+                if (pairingDone) {
+                    console.log('⏳ Pairing code imetolewa. Inasubiri mtumiaji...');
+                    console.log('🔄 Reconnecting baada ya sekunde 30...');
+                    setTimeout(startBot, 30000); // ✅ Sekunde 30 badala ya 5
+                    return;
+                }
+
+                console.log(`🔴 CONNECTION CLOSED (${code})`);
 
                 if (code === DisconnectReason.loggedOut) {
                     console.log('❌ Logged out. Inafuta session...');
                     fs.rmSync(SESSION_DIR, { recursive: true, force: true });
                     fs.mkdirSync(SESSION_DIR, { recursive: true });
+                    pairingDone = false;
                     setTimeout(startBot, 3000);
                 } else {
                     console.log('🔄 Reconnecting baada ya sekunde 5...');
@@ -76,8 +87,8 @@ async function startBot() {
             }
         });
 
-        if (!state.creds.registered) {
-            // Subiri connection iwe "connecting" kwanza kabla ya pairing
+        if (!state.creds.registered && !pairingDone) {
+            // Subiri connection iwe connecting kwanza
             await new Promise(resolve => {
                 const handler = (u) => {
                     if (u.connection === 'connecting' || u.connection === 'open') {
@@ -86,23 +97,31 @@ async function startBot() {
                     }
                 };
                 sock.ev.on('connection.update', handler);
-                setTimeout(resolve, 8000); // backup timeout
+                setTimeout(resolve, 8000);
             });
 
-            // Pumzika sekunde 3 zaidi ili socket iwe stable
             await new Promise(r => setTimeout(r, 3000));
 
             try {
                 const code = await sock.requestPairingCode(PHONE_NUMBER);
-                console.log(`\n🔑 PAIRING CODE: ${code}`);
-                console.log('Weka code: WhatsApp > Linked Devices > Link with phone number\n');
+                pairingDone = true; // ✅ Weka alama pairing imefanywa
+
+                // ✅ Onyesha code kwa njia inayoonekana wazi
+                console.log('\n');
+                console.log('╔══════════════════════════════╗');
+                console.log(`║  🔑 PAIRING CODE: ${code}  ║`);
+                console.log('╚══════════════════════════════╝');
+                console.log('👆 Nenda WhatsApp > Linked Devices > Link with phone number');
+                console.log('⏳ Una dakika 2 kuweka code hii\n');
+
             } catch (err) {
                 console.error('❌ Pairing imeshindwa:', err.message);
+                pairingDone = false;
                 sock.end();
                 isReconnecting = false;
                 setTimeout(startBot, 10000);
             }
-        } else {
+        } else if (state.creds.registered) {
             console.log('✅ Session ipo. Inaunganisha...');
         }
 
