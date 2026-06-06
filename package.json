@@ -10,6 +10,7 @@
     "@whiskeysockets/baileys": "^6.7.5",
     "pg": "^8.11.5",
     "dotenv": "^16.3.1",
-    "chalk": "^4.1.2"
+    "chalk": "^4.1.2",
+    "pino": "^8.17.2"
   }
 }
