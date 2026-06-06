@@ -34,7 +34,10 @@ if (!PHONE_NUMBER) {
 let sock = null;
 let isConnecting = false;
 let pairingRequested = false;
-let openTimer = null; // kwa kuweka timeout ya jumla
+let openTimer = null;
+
+// 🔥 FIX 1: prevent duplicate startBot calls (IMPORTANT)
+let bootLock = false;
 
 function clearOpenTimer() {
     if (openTimer) {
@@ -56,19 +59,24 @@ function displayPairingCode(code) {
 }
 
 async function startBot() {
-    if (isConnecting) return;
+    // 🔥 FIX 2: HARD LOCK (prevents race loops)
+    if (bootLock || isConnecting) return;
+    bootLock = true;
     isConnecting = true;
     pairingRequested = false;
+
     clearOpenTimer();
 
     try {
         const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR, logger);
         const { version } = await fetchLatestBaileysVersion();
 
-        // Funga ya zamani
+        // close old socket safely
         if (sock) {
-            sock.ev.removeAllListeners();
-            sock.ws?.close();
+            try {
+                sock.ev.removeAllListeners();
+                sock.ws?.close();
+            } catch {}
             sock = null;
         }
 
@@ -80,68 +88,46 @@ async function startBot() {
             },
             printQRInTerminal: false,
             browser: ['Ubuntu', 'Chrome', '120.0.0'],
-            connectTimeoutMs: 60000,      // subiri sekunde 60 kabla ya kukata
-            keepAliveIntervalMs: 30000,   // piga keepalive kila sekunde 30
+            connectTimeoutMs: 60000,
+            keepAliveIntervalMs: 30000,
         });
 
-        // Hifadhi credentials
         sock.ev.on('creds.update', saveCreds);
 
-        // ---- Timer ya jumla: kama haijafunguka ndani ya sekunde 90, restart ----
-        openTimer = setTimeout(() => {
-            console.log('⏰ Haikufunguka baada ya sekunde 90. Inaanzisha upya...');
-            isConnecting = false;
-            if (sock) {
-                sock.ev.removeAllListeners();
-                sock.ws?.close();
-                sock = null;
-            }
-            setTimeout(startBot, 7000);
-        }, 90000);
-
-        // ---- SKIRIA KUU YA CONNECTION ----
+        // 🔥 FIX 3: request pairing ONLY after connection state stabilizes
         sock.ev.on('connection.update', async (update) => {
             const { connection, lastDisconnect } = update;
-            console.log('🔄 State:', connection);
+
+            console.log('🔄 State:', connection || 'unknown');
 
             if (connection === 'open') {
-                clearOpenTimer();
                 console.log('🟢 BOT ONLINE SUCCESSFULLY!');
                 isConnecting = false;
+                bootLock = false;
 
-                // Ikiwa haijasajiliwa, omba pairing code
+                clearOpenTimer();
+
+                // pairing only once
                 if (!state.creds.registered && !pairingRequested) {
                     pairingRequested = true;
+
                     console.log('⚡ Inaomba pairing code...');
+
                     try {
-                        // Hakikisha WebSocket iko OPEN (readyState 1)
-                        if (sock.ws?.readyState !== 1) {
-                            await new Promise(resolve => {
-                                const check = setInterval(() => {
-                                    if (sock.ws?.readyState === 1) {
-                                        clearInterval(check);
-                                        resolve();
-                                    }
-                                }, 500);
-                                setTimeout(() => {
-                                    clearInterval(check);
-                                    resolve();
-                                }, 5000);
-                            });
-                        }
                         const code = await sock.requestPairingCode(PHONE_NUMBER);
                         displayPairingCode(code);
                     } catch (e) {
                         console.log('❌ Pairing error:', e.message);
                         isConnecting = false;
+                        bootLock = false;
                         setTimeout(startBot, 7000);
-                        return;
                     }
                 }
             }
 
             if (connection === 'close') {
                 clearOpenTimer();
+
                 const statusCode = lastDisconnect?.error?.output?.statusCode;
 
                 console.log('\n════ DISCONNECT INFO ════');
@@ -150,9 +136,10 @@ async function startBot() {
                 console.log('════════════════════════\n');
 
                 isConnecting = false;
+                bootLock = false;
 
                 if (statusCode === DisconnectReason.loggedOut || statusCode === 401) {
-                    console.log('❌ Session invalid. Inafuta folder ya session...');
+                    console.log('❌ Session invalid. Clearing session...');
                     fs.rmSync(SESSION_DIR, { recursive: true, force: true });
                     fs.mkdirSync(SESSION_DIR, { recursive: true });
                 }
@@ -161,16 +148,33 @@ async function startBot() {
             }
         });
 
+        // timer ya safety (no infinite hang)
+        openTimer = setTimeout(() => {
+            console.log('⏰ Connection stuck. Restarting...');
+            isConnecting = false;
+            bootLock = false;
+
+            if (sock) {
+                try {
+                    sock.ev.removeAllListeners();
+                    sock.ws?.close();
+                } catch {}
+            }
+
+            setTimeout(startBot, 8000);
+        }, 90000);
+
         if (state.creds.registered) {
             console.log('✅ Session ipo. Inaunganisha...');
         } else {
-            console.log('⏳ Inasubiri muunganisho wa kwanza (itachukua hadi sekunde 90)...');
+            console.log('⏳ Inasubiri muunganisho wa kwanza (max 90s)...');
         }
 
     } catch (err) {
         console.error('BOT ERROR:', err);
-        clearOpenTimer();
         isConnecting = false;
+        bootLock = false;
+        clearOpenTimer();
         setTimeout(startBot, 7000);
     }
 }
