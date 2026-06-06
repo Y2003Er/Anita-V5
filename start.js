@@ -31,7 +31,26 @@ if (!PHONE_NUMBER) {
 }
 
 let isReconnecting = false;
-let pairingDone = false; // ✅ Zuia pairing kurudiwa
+let pairingDone = false;
+
+function displayPairingCode(code) {
+    // Onyesha code kwa njia inayoonekana wazi na rahisi kunakili
+    console.log('\n');
+    console.log('╔══════════════════════════════════╗');
+    console.log('║        🔑 PAIRING CODE           ║');
+    console.log('╠══════════════════════════════════╣');
+    console.log(`║         ${code}         ║`);
+    console.log('╠══════════════════════════════════╣');
+    console.log('║  📋 NAKILI CODE HAPA JUU          ║');
+    console.log('╚══════════════════════════════════╝');
+    console.log('');
+    console.log(`📋 CODE: ${code}`);  // ← Mstari mmoja rahisi kunakili
+    console.log('');
+    console.log('👆 Fungua WhatsApp → Settings');
+    console.log('👆 Linked Devices → Link with phone number');
+    console.log('👆 Weka namba yako → Popup itatokea');
+    console.log('⏳ Una sekunde 60 tu!\n');
+}
 
 async function startBot() {
     if (isReconnecting) return;
@@ -43,7 +62,8 @@ async function startBot() {
         const sock = makeWASocket({
             auth: state,
             printQRInTerminal: false,
-            browser: Browsers.windows('Chrome'),
+            mobile: false,
+            browser: Browsers.ubuntu('Chrome'),
             connectTimeoutMs: 60000,
             defaultQueryTimeoutMs: 60000
         });
@@ -63,12 +83,9 @@ async function startBot() {
                 const code = lastDisconnect?.error?.output?.statusCode;
                 isReconnecting = false;
 
-                // ✅ Kama pairing imefanywa, subiri mtumiaji aweke code
-                // Usireconnect haraka haraka
                 if (pairingDone) {
-                    console.log('⏳ Pairing code imetolewa. Inasubiri mtumiaji...');
-                    console.log('🔄 Reconnecting baada ya sekunde 30...');
-                    setTimeout(startBot, 30000); // ✅ Sekunde 30 badala ya 5
+                    console.log('⏳ Inasubiri mtumiaji aweke code WhatsApp...');
+                    setTimeout(startBot, 30000);
                     return;
                 }
 
@@ -88,7 +105,6 @@ async function startBot() {
         });
 
         if (!state.creds.registered && !pairingDone) {
-            // Subiri connection iwe connecting kwanza
             await new Promise(resolve => {
                 const handler = (u) => {
                     if (u.connection === 'connecting' || u.connection === 'open') {
@@ -104,15 +120,8 @@ async function startBot() {
 
             try {
                 const code = await sock.requestPairingCode(PHONE_NUMBER);
-                pairingDone = true; // ✅ Weka alama pairing imefanywa
-
-                // ✅ Onyesha code kwa njia inayoonekana wazi
-                console.log('\n');
-                console.log('╔══════════════════════════════╗');
-                console.log(`║  🔑 PAIRING CODE: ${code}  ║`);
-                console.log('╚══════════════════════════════╝');
-                console.log('👆 Nenda WhatsApp > Linked Devices > Link with phone number');
-                console.log('⏳ Una dakika 2 kuweka code hii\n');
+                pairingDone = true;
+                displayPairingCode(code);
 
             } catch (err) {
                 console.error('❌ Pairing imeshindwa:', err.message);
