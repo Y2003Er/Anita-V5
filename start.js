@@ -56,7 +56,7 @@ function displayPairingCode(code) {
     console.log('╠══════════════════════════╣');
     console.log(`║      ${code}      ║`);
     console.log('╚══════════════════════════╝');
-    console.log(`\n📋 CODE: ${code}\n');
+    console.log(`\n📋 CODE: ${code}\n`); // ✅ FIXED SYNTAX HERE
     console.log('👆 WhatsApp → Linked Devices → Link a Device');
     console.log('👆 Link with phone number → Weka namba yako');
     console.log('👆 Popup itatokea yenyewe — bonyeza CONFIRM\n');
@@ -81,32 +81,24 @@ async function startBot() {
             sock = null;
         }
 
-        // ---- SOCKET CONFIG ----
         sock = makeWASocket({
             version,
             auth: {
                 creds: state.creds,
                 keys: makeCacheableSignalKeyStore(state.keys, logger),
             },
-            logger,                           // itaonyesha trace
+            logger,
             printQRInTerminal: false,
-            browser: ['Ubuntu', 'Chrome', '120.0.0'], // Thibitisho: hii inafanya kazi
+            browser: ['Ubuntu', 'Chrome', '120.0.0'],
             connectTimeoutMs: 60000,
             keepAliveIntervalMs: 30000,
-            // Hakuna agent maalum
         });
 
-        // ---- Hifadhi credentials ----
         sock.ev.on('creds.update', saveCreds);
 
-        // ---- Sikiliza usajili ukikamilika (kabla ya 'open') ----
-        sock.ev.on('messaging-history.set', (msg) => {
-            console.log('📦 messaging-history.set:', JSON.stringify(msg).slice(0, 200));
-        });
-
-        // ---- MAIN CONNECTION LISTENER ----
         sock.ev.on('connection.update', async (update) => {
             const { connection, lastDisconnect } = update;
+
             console.log('🔄 State:', connection);
 
             if (connection === 'open') {
@@ -114,40 +106,13 @@ async function startBot() {
                 console.log('🟢 BOT ONLINE SUCCESSFULLY!');
                 isConnecting = false;
                 bootLock = false;
-
-                if (!state.creds.registered && !pairingRequested) {
-                    pairingRequested = true;
-                    console.log('⚡ Inaomba pairing code...');
-                    try {
-                        if (sock.ws?.readyState !== 1) {
-                            await new Promise(resolve => {
-                                const check = setInterval(() => {
-                                    if (sock.ws?.readyState === 1) {
-                                        clearInterval(check);
-                                        resolve();
-                                    }
-                                }, 500);
-                                setTimeout(() => {
-                                    clearInterval(check);
-                                    resolve();
-                                }, 5000);
-                            });
-                        }
-                        const code = await sock.requestPairingCode(PHONE_NUMBER);
-                        displayPairingCode(code);
-                    } catch (e) {
-                        console.log('❌ Pairing error:', e.message);
-                        isConnecting = false;
-                        bootLock = false;
-                        setTimeout(startBot, 7000);
-                        return;
-                    }
-                }
             }
 
             if (connection === 'close') {
                 clearOpenTimer();
+
                 const statusCode = lastDisconnect?.error?.output?.statusCode;
+
                 console.log('\n════ DISCONNECT INFO ════');
                 console.log('Code:', statusCode);
                 console.log(JSON.stringify(lastDisconnect, null, 2));
@@ -166,14 +131,18 @@ async function startBot() {
             }
         });
 
-        // ---- Timer ya dharura ----
         openTimer = setTimeout(() => {
             console.log('⏰ Haikufunguka kwa sekunde 90. Restarting...');
             isConnecting = false;
             bootLock = false;
+
             if (sock) {
-                try { sock.ev.removeAllListeners(); sock.ws?.close(); } catch {}
+                try {
+                    sock.ev.removeAllListeners();
+                    sock.ws?.close();
+                } catch {}
             }
+
             setTimeout(startBot, 7000);
         }, 90000);
 
