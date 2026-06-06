@@ -1,4 +1,4 @@
-// session-db.js – with verbose logging and safe binary handling
+// session-db.js – FIXED VERSION (base64 serialization, single table)
 'use strict';
 
 const { Pool } = require('pg');
@@ -9,22 +9,18 @@ let pool = null;
 function getPool() {
     if (pool) return pool;
     const connectionString = process.env.DATABASE_URL;
-    if (!connectionString) {
-        console.error('[session-db] DATABASE_URL haipo');
-        process.exit(1);
-    }
+    if (!connectionString) throw new Error('DATABASE_URL missing');
     pool = new Pool({
         connectionString,
-        ssl: connectionString.includes('localhost') ? false : { rejectUnauthorized: false },
+        ssl: { rejectUnauthorized: false },
         max: 5,
-        idleTimeoutMillis: 30000,
         connectionTimeoutMillis: 30000,
     });
-    pool.on('error', (err) => console.error('[session-db] Pool error:', err.message));
+    pool.on('error', (err) => console.error('[DB] Pool error:', err.message));
     return pool;
 }
 
-// Serialize Buffers to base64
+// ========== Serialization helpers (Buffer <-> base64) ==========
 function toSerializable(obj) {
     if (Buffer.isBuffer(obj)) {
         return { __type: 'Buffer', data: obj.toString('base64') };
@@ -53,121 +49,137 @@ function fromSerializable(obj) {
     return obj;
 }
 
+// ========== Initialize table (single row per session) ==========
 async function initializeDatabase() {
-    const p = getPool();
+    const client = await getPool().connect();
     try {
-        await p.query(`
-            CREATE TABLE IF NOT EXISTS whatsapp_sessions (
-                session_id TEXT NOT NULL,
-                file_key TEXT NOT NULL,
-                session_data JSONB NOT NULL,
-                updated_at TIMESTAMPTZ DEFAULT NOW(),
-                PRIMARY KEY (session_id, file_key)
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS wa_sessions (
+                session_id TEXT PRIMARY KEY,
+                creds JSONB NOT NULL,
+                keys JSONB NOT NULL,
+                updated_at TIMESTAMPTZ DEFAULT NOW()
             )
         `);
-        console.log('[session-db] ✅ Table ipo tayari');
+        console.log('[session-db] Table "wa_sessions" ready.');
         return true;
     } catch (err) {
-        console.error('[session-db] ❌ Table creation failed:', err.message);
+        console.error('[session-db] Table creation failed:', err.message);
         return false;
+    } finally {
+        client.release();
     }
 }
 
-async function dbGet(sessionId, fileKey) {
-    const p = getPool();
+// ========== Load session from DB ==========
+async function loadSession(sessionId) {
+    const client = await getPool().connect();
     try {
-        const res = await p.query(
-            `SELECT session_data FROM whatsapp_sessions WHERE session_id = $1 AND file_key = $2`,
-            [sessionId, fileKey]
+        const res = await client.query(
+            `SELECT creds, keys FROM wa_sessions WHERE session_id = $1`,
+            [sessionId]
         );
-        if (!res.rows.length) return null;
-        const raw = res.rows[0].session_data;
-        return fromSerializable(raw);
+        if (res.rows.length === 0) return null;
+        const creds = fromSerializable(res.rows[0].creds);
+        const keys = fromSerializable(res.rows[0].keys);
+        return { creds, keys };
     } catch (err) {
-        console.error(`[session-db] dbGet error (${fileKey}):`, err.message);
+        console.error('[session-db] Load error:', err.message);
         return null;
+    } finally {
+        client.release();
     }
 }
 
-async function dbSet(sessionId, fileKey, value) {
-    const p = getPool();
-    const serialized = toSerializable(value);
+// ========== Save or update session ==========
+async function saveSession(sessionId, creds, keys) {
+    const client = await getPool().connect();
     try {
-        await p.query(`
-            INSERT INTO whatsapp_sessions (session_id, file_key, session_data, updated_at)
-            VALUES ($1, $2, $3::jsonb, NOW())
-            ON CONFLICT (session_id, file_key) DO UPDATE
-            SET session_data = EXCLUDED.session_data, updated_at = NOW()
-        `, [sessionId, fileKey, JSON.stringify(serialized)]);
-        console.log(`[session-db] ✅ ${fileKey} saved`);
+        const credsJson = toSerializable(creds);
+        const keysJson = toSerializable(keys);
+        await client.query(
+            `INSERT INTO wa_sessions (session_id, creds, keys, updated_at)
+             VALUES ($1, $2::jsonb, $3::jsonb, NOW())
+             ON CONFLICT (session_id) DO UPDATE
+             SET creds = EXCLUDED.creds, keys = EXCLUDED.keys, updated_at = NOW()`,
+            [sessionId, JSON.stringify(credsJson), JSON.stringify(keysJson)]
+        );
+        console.log('[session-db] Session saved/updated');
     } catch (err) {
-        console.error(`[session-db] ❌ ${fileKey} failed:`, err.message);
+        console.error('[session-db] Save error:', err.message);
+    } finally {
+        client.release();
     }
 }
 
-async function dbDel(sessionId, fileKey) {
-    const p = getPool();
+// ========== Delete session ==========
+async function deleteSession(sessionId) {
+    const client = await getPool().connect();
     try {
-        await p.query(`DELETE FROM whatsapp_sessions WHERE session_id = $1 AND file_key = $2`, [sessionId, fileKey]);
-        console.log(`[session-db] 🗑️ ${fileKey} deleted`);
+        await client.query(`DELETE FROM wa_sessions WHERE session_id = $1`, [sessionId]);
+        console.log('[session-db] Session deleted');
     } catch (err) {
-        console.error(`[session-db] dbDel error:`, err.message);
+        console.error('[session-db] Delete error:', err.message);
+    } finally {
+        client.release();
     }
 }
 
+// ========== Main auth state for Baileys ==========
 async function usePostgresAuthState(sessionId) {
-    let creds = await dbGet(sessionId, 'creds');
-    if (!creds) {
-        creds = initAuthCreds();
-        await dbSet(sessionId, 'creds', creds);
-        console.log('[session-db] 🆕 New session created, pairing required');
-    } else {
-        console.log('[session-db] ♻️ Existing session found, reusing');
-    }
+    // Try to load existing session
+    let session = await loadSession(sessionId);
+    let creds = session ? session.creds : initAuthCreds();
+    let keysStore = session ? session.keys : {};
 
+    // Build keys interface expected by Baileys
     const keys = {
         get: async (type, ids) => {
-            const data = {};
-            await Promise.all(ids.map(async (id) => {
-                const fileKey = `${type}--${id}`;
-                let val = await dbGet(sessionId, fileKey);
-                if (val) {
+            const result = {};
+            for (const id of ids) {
+                const key = `${type}--${id}`;
+                const val = keysStore[key];
+                if (val !== undefined) {
                     if (type === 'app-state-sync-key') {
-                        data[id] = proto.Message.AppStateSyncKeyData.fromObject(val);
+                        // Convert plain object back to proto
+                        result[id] = proto.Message.AppStateSyncKeyData.fromObject(val);
                     } else {
-                        data[id] = val;
+                        result[id] = val;
                     }
                 }
-            }));
-            return data;
+            }
+            return result;
         },
         set: async (data) => {
-            await Promise.all(
-                Object.entries(data).flatMap(([type, ids]) =>
-                    Object.entries(ids ?? {}).map(([id, value]) => {
-                        const fileKey = `${type}--${id}`;
-                        return value ? dbSet(sessionId, fileKey, value) : dbDel(sessionId, fileKey);
-                    })
-                )
-            );
-        },
+            // data is like { 'pre-key': { '1': {...} }, 'session': { ... } }
+            let changed = false;
+            for (const [type, entries] of Object.entries(data)) {
+                if (!entries) continue;
+                for (const [id, value] of Object.entries(entries)) {
+                    const key = `${type}--${id}`;
+                    if (value === null || value === undefined) {
+                        if (keysStore[key] !== undefined) {
+                            delete keysStore[key];
+                            changed = true;
+                        }
+                    } else {
+                        keysStore[key] = value;
+                        changed = true;
+                    }
+                }
+            }
+            if (changed) {
+                await saveSession(sessionId, creds, keysStore);
+            }
+        }
     };
 
     const saveCreds = async () => {
-        await dbSet(sessionId, 'creds', creds);
-        console.log('[session-db] 💾 Creds saved after update');
+        await saveSession(sessionId, creds, keysStore);
+        console.log('[session-db] Creds updated (saveCreds)');
     };
 
     return { state: { creds, keys }, saveCreds };
-}
-
-async function deleteSession(sessionId) {
-    try {
-        await getPool().query(`DELETE FROM whatsapp_sessions WHERE session_id = $1`, [sessionId]);
-        console.log(`[session-db] 🗑️ Session ${sessionId} deleted`);
-    } catch (err) {
-        console.error('[session-db] delete error:', err.message);
-    }
 }
 
 module.exports = {
