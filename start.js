@@ -12,8 +12,10 @@ const {
     fetchLatestBaileysVersion,
     makeCacheableSignalKeyStore,
 } = require('@whiskeysockets/baileys');
+const https = require('https');
 
-const logger = pino({ level: 'silent' });
+// Logger itakayosaidia kuona kila hatua (aacha 'info' wakati unatest)
+const logger = pino({ level: 'info' });
 
 const SESSION_DIR = path.resolve(process.env.SESSION_DIR || './session');
 const PHONE_NUMBER = process.env.PHONE_NUMBER?.trim();
@@ -31,13 +33,20 @@ if (!PHONE_NUMBER) {
     process.exit(1);
 }
 
+// Hakikisha namba inaanza na nchi bila '+', mfano 2557...
+if (!/^\d{10,15}$/.test(PHONE_NUMBER)) {
+    console.log('❌ PHONE_NUMBER si sahihi. Tumia namba pekee, mfano 255712345678');
+    process.exit(1);
+}
+
 let sock = null;
 let isConnecting = false;
 let pairingRequested = false;
+let bootLock = false;
 let openTimer = null;
 
-// 🔥 FIX 1: prevent duplicate startBot calls (IMPORTANT)
-let bootLock = false;
+// SSL Agent ya kupuuza uthibitisho (kwa testing TU, ondoa kwenye production)
+const insecureAgent = new https.Agent({ rejectUnauthorized: false });
 
 function clearOpenTimer() {
     if (openTimer) {
@@ -52,26 +61,24 @@ function displayPairingCode(code) {
     console.log('╠══════════════════════════╣');
     console.log(`║      ${code}      ║`);
     console.log('╚══════════════════════════╝');
-    console.log(`\n📋 CODE: ${code}\n`);
+    console.log(`\n📋 CODE: ${code}\n');
     console.log('👆 WhatsApp → Linked Devices → Link a Device');
     console.log('👆 Link with phone number → Weka namba yako');
     console.log('👆 Popup itatokea yenyewe — bonyeza CONFIRM\n');
 }
 
 async function startBot() {
-    // 🔥 FIX 2: HARD LOCK (prevents race loops)
     if (bootLock || isConnecting) return;
     bootLock = true;
     isConnecting = true;
     pairingRequested = false;
-
     clearOpenTimer();
 
     try {
         const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR, logger);
         const { version } = await fetchLatestBaileysVersion();
 
-        // close old socket safely
+        // Funga ya zamani
         if (sock) {
             try {
                 sock.ev.removeAllListeners();
@@ -80,40 +87,54 @@ async function startBot() {
             sock = null;
         }
 
+        // ---------- SOCKET CONFIG ----------
         sock = makeWASocket({
             version,
             auth: {
                 creds: state.creds,
                 keys: makeCacheableSignalKeyStore(state.keys, logger),
             },
+            logger,                       // itaonyesha debug kwenye terminal
             printQRInTerminal: false,
-            browser: ['Ubuntu', 'Chrome', '120.0.0'],
+            // Browser inayokubalika na WhatsApp (Chrome on Linux)
+            browser: ['Chrome (Linux)', '', ''],
             connectTimeoutMs: 60000,
             keepAliveIntervalMs: 30000,
+            agent: insecureAgent,         // remove after fixing SSL
         });
 
         sock.ev.on('creds.update', saveCreds);
 
-        // 🔥 FIX 3: request pairing ONLY after connection state stabilizes
+        // ---------- MAIN LISTENER ----------
         sock.ev.on('connection.update', async (update) => {
             const { connection, lastDisconnect } = update;
-
-            console.log('🔄 State:', connection || 'unknown');
+            console.log('🔄 State:', connection);
 
             if (connection === 'open') {
+                clearOpenTimer();
                 console.log('🟢 BOT ONLINE SUCCESSFULLY!');
                 isConnecting = false;
                 bootLock = false;
 
-                clearOpenTimer();
-
-                // pairing only once
                 if (!state.creds.registered && !pairingRequested) {
                     pairingRequested = true;
-
                     console.log('⚡ Inaomba pairing code...');
-
                     try {
+                        // Subiri WebSocket iwe tayari
+                        if (sock.ws?.readyState !== 1) {
+                            await new Promise(resolve => {
+                                const check = setInterval(() => {
+                                    if (sock.ws?.readyState === 1) {
+                                        clearInterval(check);
+                                        resolve();
+                                    }
+                                }, 500);
+                                setTimeout(() => {
+                                    clearInterval(check);
+                                    resolve();
+                                }, 5000);
+                            });
+                        }
                         const code = await sock.requestPairingCode(PHONE_NUMBER);
                         displayPairingCode(code);
                     } catch (e) {
@@ -121,15 +142,14 @@ async function startBot() {
                         isConnecting = false;
                         bootLock = false;
                         setTimeout(startBot, 7000);
+                        return;
                     }
                 }
             }
 
             if (connection === 'close') {
                 clearOpenTimer();
-
                 const statusCode = lastDisconnect?.error?.output?.statusCode;
-
                 console.log('\n════ DISCONNECT INFO ════');
                 console.log('Code:', statusCode);
                 console.log(JSON.stringify(lastDisconnect, null, 2));
@@ -139,7 +159,7 @@ async function startBot() {
                 bootLock = false;
 
                 if (statusCode === DisconnectReason.loggedOut || statusCode === 401) {
-                    console.log('❌ Session invalid. Clearing session...');
+                    console.log('❌ Session invalid. Inafuta...');
                     fs.rmSync(SESSION_DIR, { recursive: true, force: true });
                     fs.mkdirSync(SESSION_DIR, { recursive: true });
                 }
@@ -148,20 +168,15 @@ async function startBot() {
             }
         });
 
-        // timer ya safety (no infinite hang)
+        // Timer ya dharura (kama haifunguki)
         openTimer = setTimeout(() => {
-            console.log('⏰ Connection stuck. Restarting...');
+            console.log('⏰ Haikufunguka kwa sekunde 90. Restarting...');
             isConnecting = false;
             bootLock = false;
-
             if (sock) {
-                try {
-                    sock.ev.removeAllListeners();
-                    sock.ws?.close();
-                } catch {}
+                try { sock.ev.removeAllListeners(); sock.ws?.close(); } catch {}
             }
-
-            setTimeout(startBot, 8000);
+            setTimeout(startBot, 7000);
         }, 90000);
 
         if (state.creds.registered) {
