@@ -14,7 +14,6 @@ const {
 } = require('@whiskeysockets/baileys');
 const https = require('https');
 
-// Logger itakayosaidia kuona kila hatua (aacha 'info' wakati unatest)
 const logger = pino({ level: 'info' });
 
 const SESSION_DIR = path.resolve(process.env.SESSION_DIR || './session');
@@ -33,7 +32,6 @@ if (!PHONE_NUMBER) {
     process.exit(1);
 }
 
-// Hakikisha namba inaanza na nchi bila '+', mfano 2557...
 if (!/^\d{10,15}$/.test(PHONE_NUMBER)) {
     console.log('❌ PHONE_NUMBER si sahihi. Tumia namba pekee, mfano 255712345678');
     process.exit(1);
@@ -45,7 +43,6 @@ let pairingRequested = false;
 let bootLock = false;
 let openTimer = null;
 
-// SSL Agent ya kupuuza uthibitisho (kwa testing TU, ondoa kwenye production)
 const insecureAgent = new https.Agent({ rejectUnauthorized: false });
 
 function clearOpenTimer() {
@@ -61,7 +58,7 @@ function displayPairingCode(code) {
     console.log('╠══════════════════════════╣');
     console.log(`║      ${code}      ║`);
     console.log('╚══════════════════════════╝');
-    console.log(`\n📋 CODE: ${code}\n');
+    console.log(`\n📋 CODE: ${code}\n`);
     console.log('👆 WhatsApp → Linked Devices → Link a Device');
     console.log('👆 Link with phone number → Weka namba yako');
     console.log('👆 Popup itatokea yenyewe — bonyeza CONFIRM\n');
@@ -78,7 +75,6 @@ async function startBot() {
         const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR, logger);
         const { version } = await fetchLatestBaileysVersion();
 
-        // Funga ya zamani
         if (sock) {
             try {
                 sock.ev.removeAllListeners();
@@ -87,25 +83,22 @@ async function startBot() {
             sock = null;
         }
 
-        // ---------- SOCKET CONFIG ----------
         sock = makeWASocket({
             version,
             auth: {
                 creds: state.creds,
                 keys: makeCacheableSignalKeyStore(state.keys, logger),
             },
-            logger,                       // itaonyesha debug kwenye terminal
+            logger,
             printQRInTerminal: false,
-            // Browser inayokubalika na WhatsApp (Chrome on Linux)
             browser: ['Chrome (Linux)', '', ''],
             connectTimeoutMs: 60000,
             keepAliveIntervalMs: 30000,
-            agent: insecureAgent,         // remove after fixing SSL
+            agent: insecureAgent,
         });
 
         sock.ev.on('creds.update', saveCreds);
 
-        // ---------- MAIN LISTENER ----------
         sock.ev.on('connection.update', async (update) => {
             const { connection, lastDisconnect } = update;
             console.log('🔄 State:', connection);
@@ -120,7 +113,6 @@ async function startBot() {
                     pairingRequested = true;
                     console.log('⚡ Inaomba pairing code...');
                     try {
-                        // Subiri WebSocket iwe tayari
                         if (sock.ws?.readyState !== 1) {
                             await new Promise(resolve => {
                                 const check = setInterval(() => {
@@ -168,7 +160,6 @@ async function startBot() {
             }
         });
 
-        // Timer ya dharura (kama haifunguki)
         openTimer = setTimeout(() => {
             console.log('⏰ Haikufunguka kwa sekunde 90. Restarting...');
             isConnecting = false;
