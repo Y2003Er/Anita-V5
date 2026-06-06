@@ -6,7 +6,6 @@ const dotenv = require('dotenv');
 dotenv.config();
 
 const pino = require('pino');
-const chalk = require('chalk');
 const {
     default: makeWASocket,
     DisconnectReason,
@@ -20,21 +19,42 @@ const logger = pino({ level: 'silent' });
 const SESSION_DIR = path.resolve(process.env.SESSION_DIR || './session');
 const PHONE_NUMBER = process.env.PHONE_NUMBER?.trim();
 
+// ─────────────────────────────────────────────────
+//   LOGGER UTILITY
+// ─────────────────────────────────────────────────
+const log = {
+    info:    (msg) => console.log(`  ✦  ${msg}`),
+    success: (msg) => console.log(`  ✔  ${msg}`),
+    warn:    (msg) => console.log(`  ⚠  ${msg}`),
+    error:   (msg) => console.log(`  ✖  ${msg}`),
+    state:   (msg) => console.log(`  ◈  ${msg}`),
+    div:     ()    => console.log(`  ${'─'.repeat(46)}`),
+    blank:   ()    => console.log(''),
+};
+
 if (!fs.existsSync(SESSION_DIR)) {
     fs.mkdirSync(SESSION_DIR, { recursive: true });
 }
 
-console.log(chalk.cyan('=============================='));
-console.log(chalk.cyan.bold('  QUEEN_ANITA-V5 STARTING    '));
-console.log(chalk.cyan('=============================='));
+// ─────────────────────────────────────────────────
+//   BOOT BANNER
+// ─────────────────────────────────────────────────
+log.blank();
+console.log('  ╔════════════════════════════════════════════╗');
+console.log('  ║                                            ║');
+console.log('  ║       QUEEN_ANITA-V5   ·   RUNTIME         ║');
+console.log('  ║       WhatsApp Bot   ·   Baileys            ║');
+console.log('  ║                                            ║');
+console.log('  ╚════════════════════════════════════════════╝');
+log.blank();
 
 if (!PHONE_NUMBER) {
-    console.log(chalk.red.bold('❌ PHONE_NUMBER haipo kwenye .env'));
+    log.error('PHONE_NUMBER haipo kwenye .env — Bot imesimama.');
     process.exit(1);
 }
 
 if (!/^\d{10,15}$/.test(PHONE_NUMBER)) {
-    console.log(chalk.red.bold('❌ PHONE_NUMBER si sahihi'));
+    log.error('PHONE_NUMBER si sahihi — Angalia format (255...)');
     process.exit(1);
 }
 
@@ -50,12 +70,21 @@ function clearOpenTimer() {
 }
 
 function displayPairingCode(code) {
-    console.log(chalk.yellow('\n╔══════════════════════════╗'));
-    console.log(chalk.yellow('║   🔑 PAIRING CODE        ║'));
-    console.log(chalk.yellow('╠══════════════════════════╣'));
-    console.log(chalk.yellow(`║      ${code}      ║`));
-    console.log(chalk.yellow('╚══════════════════════════╝'));
-    console.log(chalk.yellow.bold(`\n📋 CODE: ${code}\n`));
+    log.blank();
+    console.log('  ┌────────────────────────────────────────────┐');
+    console.log('  │                                            │');
+    console.log('  │   🔑  PAIRING CODE                         │');
+    console.log('  │                                            │');
+    console.log(`  │         ${code.padEnd(36)}│`);
+    console.log('  │                                            │');
+    console.log('  └────────────────────────────────────────────┘');
+    log.blank();
+    log.info(`Pair Code      →  ${code}`);
+    log.blank();
+    log.info('WhatsApp  →  Linked Devices  →  Link a Device');
+    log.info('Chagua    →  Link with phone number');
+    log.info('Ingiza nambari yako  →  Bonyeza Confirm');
+    log.blank();
 }
 
 async function startBot() {
@@ -93,9 +122,8 @@ async function startBot() {
         sock.ev.on('connection.update', async (update) => {
             const { connection, lastDisconnect } = update;
 
-            console.log(chalk.cyan('🔄 State:', connection));
+            log.state(`Connection  →  ${connection}`);
 
-            // ✅ ONLY ONCE SAFE PAIRING TRIGGER
             if (
                 connection === 'connecting' &&
                 !pairingRequested &&
@@ -106,17 +134,17 @@ async function startBot() {
                 setTimeout(async () => {
                     try {
                         if (!sock || sock.ws?.readyState !== 1) {
-                            console.log(chalk.yellow('⚠️ Socket not ready, retrying pairing...'));
+                            log.warn('Socket haijaiva — Pairing itarudiwa hivi karibuni...');
                             pairingRequested = false;
                             return;
                         }
 
-                        console.log(chalk.cyan('📱 Requesting pairing code...'));
+                        log.info('Inaomba pairing code kwa nambari iliyowekwa...');
                         const code = await sock.requestPairingCode(PHONE_NUMBER);
                         displayPairingCode(code);
 
                     } catch (err) {
-                        console.log(chalk.red.bold('❌ Pairing error:', err.message));
+                        log.error(`Pairing imeshindwa  →  ${err.message}`);
                         pairingRequested = false;
                     }
                 }, 8000);
@@ -124,7 +152,9 @@ async function startBot() {
 
             if (connection === 'open') {
                 clearOpenTimer();
-                console.log(chalk.green.bold('🟢 BOT ONLINE SUCCESSFULLY!'));
+                log.div();
+                log.success('BOT IMEUNGANIKA — INAENDESHA VIZURI');
+                log.div();
                 isConnecting = false;
                 bootLock = false;
             }
@@ -134,25 +164,26 @@ async function startBot() {
 
                 const statusCode = lastDisconnect?.error?.output?.statusCode;
 
-                console.log(chalk.red.bold('❌ DISCONNECTED:', statusCode));
+                log.div();
+                log.error(`Muunganiko Umevunjika  →  Status ${statusCode ?? 'unknown'}`);
 
                 isConnecting = false;
                 bootLock = false;
 
-                // ❗ FIX: only clear session on real logout
                 if (statusCode === DisconnectReason.loggedOut) {
-                    console.log(chalk.yellow('🧹 Session cleared'));
+                    log.warn('Session imefutwa — Itaanzisha upya...');
                     fs.rmSync(SESSION_DIR, { recursive: true, force: true });
                     fs.mkdirSync(SESSION_DIR, { recursive: true });
                 }
 
+                log.info('Inajaribu kuunganika tena baada ya sekunde 7...');
+                log.div();
                 setTimeout(startBot, 7000);
             }
         });
 
-        // ⏰ SAFETY TIMEOUT
         openTimer = setTimeout(() => {
-            console.log(chalk.yellow('⏰ Timeout restart...'));
+            log.warn('Muda umekwisha — Bot itaanzisha upya...');
             isConnecting = false;
             bootLock = false;
 
@@ -165,13 +196,15 @@ async function startBot() {
         }, 120000);
 
         if (state.creds.registered) {
-            console.log(chalk.green('✅ Session exists, connecting...'));
+            log.success('Session inapatikana — Inaunganika...');
         } else {
-            console.log(chalk.yellow('⏳ New session, waiting pairing...'));
+            log.info('Session mpya — Inasubiri pairing code...');
         }
 
     } catch (err) {
-        console.log(chalk.red.bold('BOT ERROR:', err.message));
+        log.div();
+        log.error(`HITILAFU KUBWA  →  ${err.message}`);
+        log.div();
         isConnecting = false;
         bootLock = false;
         setTimeout(startBot, 7000);
