@@ -3,23 +3,21 @@
 require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
-
 const {
     default: makeWASocket,
-    useSingleFileAuthState,   // ← muhimu: tumia faili moja la JSON
-    DisconnectReason
+    DisconnectReason,
+    fetchLatestBaileysVersion
 } = require('@whiskeysockets/baileys');
 
 const SESSION_FILE = path.join(process.cwd(), 'session.json');
-const PHONE_NUMBER = process.env.PHONE_NUMBER; // inaweza kubaki kwenye .env
+const PHONE_NUMBER = process.env.PHONE_NUMBER;
 
 console.log('==============================');
 console.log('  QUEEN_ANITA-V5 STARTING  ');
 console.log('==============================');
 
 // ------------------------------------------------------------
-// 1. Ikiwa umeweka SESSION_JSON kwenye Railway environment,
-//    andika kwenye session.json kabla ya kuanza bot
+// 1. Ikiwa SESSION_JSON ipo kwenye mazingira, iandike kwenye faili
 // ------------------------------------------------------------
 if (process.env.SESSION_JSON) {
     try {
@@ -32,19 +30,53 @@ if (process.env.SESSION_JSON) {
 }
 
 // ------------------------------------------------------------
-// 2. Anzisha bot kwa kutumia session.json (au iunda tupu)
+// 2. Unda 'auth state' yetu wenyewe kwa kutumia faili moja la JSON
+// ------------------------------------------------------------
+const loadAuthState = () => {
+    try {
+        if (fs.existsSync(SESSION_FILE)) {
+            const data = fs.readFileSync(SESSION_FILE, 'utf-8');
+            return JSON.parse(data);
+        }
+    } catch (e) {
+        console.error('❌ Kosa la kusoma session.json:', e.message);
+    }
+    return {};  // rudisha tupu ikiwa faili halipo
+};
+
+const saveAuthState = (state) => {
+    try {
+        fs.writeFileSync(SESSION_FILE, JSON.stringify(state, null, 2));
+        console.log('💾 Auth state imehifadhiwa');
+    } catch (e) {
+        console.error('❌ Kosa la kuhifadhi session.json:', e.message);
+    }
+};
+
+// ------------------------------------------------------------
+// 3. Anzisha bot
 // ------------------------------------------------------------
 async function startBot() {
     try {
-        const { state, saveCreds } = useSingleFileAuthState(SESSION_FILE);
-        
+        let authState = loadAuthState();
+        const { version } = await fetchLatestBaileysVersion();
+
         const sock = makeWASocket({
-            auth: state,
+            version,
+            auth: {
+                creds: authState.creds || {},
+                keys: authState.keys || {},
+                saveCreds: () => {
+                    authState = {
+                        creds: sock.authState.creds,
+                        keys: sock.authState.keys
+                    };
+                    saveAuthState(authState);
+                }
+            },
             printQRInTerminal: false,
             browser: ['AnitaV5', 'Chrome', '110.0.0']
         });
-
-        sock.ev.on('creds.update', saveCreds);
 
         sock.ev.on('connection.update', async (update) => {
             const { connection, lastDisconnect } = update;
@@ -54,34 +86,32 @@ async function startBot() {
             }
 
             if (connection === 'close') {
-                const reason = lastDisconnect?.error?.output?.statusCode;
+                const statusCode = lastDisconnect?.error?.output?.statusCode;
                 console.log('🔴 CONNECTION CLOSED');
 
-                if (reason !== DisconnectReason.loggedOut) {
+                if (statusCode !== DisconnectReason.loggedOut) {
                     console.log('🔄 Reconnecting in 5 sec...');
                     setTimeout(startBot, 5000);
                 } else {
-                    console.log('❌ Imelogout, futa session.json na uanze upya.');
+                    console.log('❌ Logged out. Futa session.json na uanze upya.');
                 }
             }
         });
 
         // --------------------------------------------------------
-        // 3. HATUA MUHIMU: OMBA PAIRING CODE IKIWA TU HAJAS AJILIWA
-        //    Ikiwa tayari registered, pairing hairudiwi.
+        // 4. Omba pairing code TU ikiwa hakuna creds zilizosajiliwa
         // --------------------------------------------------------
-        if (!state.creds.registered) {
-            if (PHONE_NUMBER) {
-                try {
-                    const code = await sock.requestPairingCode(PHONE_NUMBER);
-                    console.log('🔑 PAIRING CODE:', code);
-                    console.log('💡 Ingiza code kwenye WhatsApp linked devices.');
-                } catch (e) {
-                    console.log('❌ Pairing error:', e.message);
-                }
-            } else {
-                console.log('⚠️ Hakuna PHONE_NUMBER. Tumia QR au angalia .env');
+        const isRegistered = authState.creds && authState.creds.registered === true;
+        if (!isRegistered && PHONE_NUMBER) {
+            try {
+                const code = await sock.requestPairingCode(PHONE_NUMBER);
+                console.log('🔑 PAIRING CODE:', code);
+                console.log('💡 Ingiza code kwenye WhatsApp > Linked Devices');
+            } catch (e) {
+                console.log('❌ Pairing error:', e.message);
             }
+        } else if (!isRegistered) {
+            console.log('⚠️ Hakuna session na hakuna PHONE_NUMBER. Tafadhali weka SESSION_JSON au PHONE_NUMBER kwenye .env');
         } else {
             console.log('✅ Session tayari imesajiliwa. Hakuna pairing inayohitajika.');
         }
