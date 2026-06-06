@@ -13,7 +13,7 @@ const {
     makeCacheableSignalKeyStore,
 } = require('@whiskeysockets/baileys');
 
-const logger = pino({ level: 'silent' }); // silent ili logs zisichanganye console
+const logger = pino({ level: 'silent' });
 
 const SESSION_DIR = path.resolve(process.env.SESSION_DIR || './session');
 const PHONE_NUMBER = process.env.PHONE_NUMBER?.trim();
@@ -23,7 +23,7 @@ if (!fs.existsSync(SESSION_DIR)) {
 }
 
 console.log('==============================');
-console.log('  QUEEN_ANITA-V5 STARTING    ');
+console.log('  26 TECH SOLUTION STARTING  ');
 console.log('==============================');
 
 if (!PHONE_NUMBER) {
@@ -95,15 +95,12 @@ async function startBot() {
 
         sock.ev.on('creds.update', saveCreds);
 
-        // ✅ FIX KUBWA: Omba pairing code wakati WS inafunguka
         sock.ev.on('connection.update', async (update) => {
-            const { connection, lastDisconnect, isNewLogin, qr } = update;
+            const { connection, lastDisconnect } = update;
 
             console.log('🔄 State:', connection ?? 'connecting...');
 
-            // Omba pairing code mara tu muunganisho unaanza (kabla ya 'open')
             if (!pairingRequested && !state.creds.registered && connection !== 'close') {
-                // Subiri kidogo ili WS ifike ready state
                 setTimeout(async () => {
                     if (pairingRequested) return;
                     try {
@@ -148,7 +145,40 @@ async function startBot() {
             }
         });
 
-        // ✅ Timeout ya kufunga kama haikufunguka
+        // ✅ MESSAGE HANDLER
+        sock.ev.on('messages.upsert', async ({ messages, type }) => {
+            if (type !== 'notify') return;
+
+            const msg = messages[0];
+            if (!msg.message) return;
+            if (msg.key.fromMe) return;
+
+            const from = msg.key.remoteJid;
+            const text = msg.message?.conversation ||
+                         msg.message?.extendedTextMessage?.text || '';
+
+            console.log(`📩 Ujumbe kutoka ${from}: ${text}`);
+
+            if (text.toLowerCase() === 'ping') {
+                await sock.sendMessage(from, { text: '🏓 Pong! Bot iko active!' });
+
+            } else if (text.toLowerCase() === 'hello' || text.toLowerCase() === 'hujambo') {
+                await sock.sendMessage(from, {
+                    text: '👋 Habari! Mimi ni *26 Tech Solution* 🤖\nPowered by *Yuzzo*\nNikusaidie nini?'
+                });
+
+            } else if (text.toLowerCase() === '!help') {
+                await sock.sendMessage(from, {
+                    text: `🤖 *26 TECH SOLUTION BOT*\n` +
+                          `Powered by *Yuzzo*\n\n` +
+                          `📋 *COMMANDS ZINAZOPATIKANA:*\n\n` +
+                          `• ping — Test bot\n` +
+                          `• hello / hujambo — Salamu\n` +
+                          `• !help — Orodha ya commands`
+                });
+            }
+        });
+
         openTimer = setTimeout(() => {
             console.log('⏰ Haikufunguka kwa sekunde 90. Restarting...');
             isConnecting = false;
