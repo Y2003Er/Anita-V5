@@ -10,20 +10,29 @@ const {
 } = require('@whiskeysockets/baileys');
 
 const SESSION_FILE = path.join(process.cwd(), 'session.json');
+const INVALID_FLAG_FILE = path.join(process.cwd(), '.session_invalid');
 const PHONE_NUMBER = process.env.PHONE_NUMBER;
 
 let validationErrorCount = 0;
-let isRestarting = false; // kuzuia migongano
+let isRestarting = false;
+let ignoreEnvSession = false;
 
 console.log('==============================');
 console.log('  QUEEN_ANITA-V5 STARTING  ');
 console.log('==============================');
 
 // ------------------------------------------------------------
-// 1. Ikiwa kuna SESSION_JSON kwenye env, iandike kwenye faili
-//    (sasa hatuibadilishi muundo – tutaruhusu bot iangalie kama ni halali)
+// 1. Angalia ikiwa session imetambuliwa kuwa batili hapo awali
 // ------------------------------------------------------------
-if (process.env.SESSION_JSON && !fs.existsSync(SESSION_FILE)) {
+if (fs.existsSync(INVALID_FLAG_FILE)) {
+    ignoreEnvSession = true;
+    console.log('⚠️ Alama ya session batili ipo. SESSION_JSON itapuuzwa.');
+}
+
+// ------------------------------------------------------------
+// 2. Soma SESSION_JSON kwa sharti tu kama haijapuuzwa
+// ------------------------------------------------------------
+if (!ignoreEnvSession && process.env.SESSION_JSON && !fs.existsSync(SESSION_FILE)) {
     try {
         const rawSession = JSON.parse(process.env.SESSION_JSON);
         fs.writeFileSync(SESSION_FILE, JSON.stringify(rawSession, null, 2));
@@ -34,7 +43,7 @@ if (process.env.SESSION_JSON && !fs.existsSync(SESSION_FILE)) {
 }
 
 // ------------------------------------------------------------
-// 2. Msimbo wa kuweka na kupata session (salama)
+// 3. Kazi za kusimamia auth state
 // ------------------------------------------------------------
 let currentState = { creds: {}, keys: {} };
 
@@ -44,7 +53,7 @@ const loadAuthState = () => {
             const data = fs.readFileSync(SESSION_FILE, 'utf-8');
             const saved = JSON.parse(data);
             currentState = {
-                creds: saved.creds || saved,  // kama saved ni creds peke yake
+                creds: saved.creds || saved,
                 keys: saved.keys || {}
             };
             return currentState;
@@ -64,17 +73,19 @@ const saveAuthState = () => {
     }
 };
 
-const deleteSessionAndReset = () => {
-    console.log('🧹 Session batili inafutwa...');
+const deleteSessionAndMarkInvalid = () => {
+    console.log('🧹 Session batili inafutwa na kuwekewa alama...');
     try {
         if (fs.existsSync(SESSION_FILE)) fs.unlinkSync(SESSION_FILE);
+        fs.writeFileSync(INVALID_FLAG_FILE, Date.now().toString());
     } catch(e) {}
     currentState = { creds: {}, keys: {} };
     validationErrorCount = 0;
+    ignoreEnvSession = true;
 };
 
 // ------------------------------------------------------------
-// 3. Anzisha bot
+// 4. Anzisha bot (tumeanza salama)
 // ------------------------------------------------------------
 async function startBot() {
     if (isRestarting) return;
@@ -95,6 +106,11 @@ async function startBot() {
                         keys: sock.authState.keys
                     };
                     saveAuthState();
+                    // Ikiwa session imehifadhiwa kwa mafanikio, ondoa alama ya batili
+                    if (fs.existsSync(INVALID_FLAG_FILE)) {
+                        fs.unlinkSync(INVALID_FLAG_FILE);
+                        console.log('✅ Alama ya session batili imeondolewa.');
+                    }
                 }
             },
             printQRInTerminal: false,
@@ -106,7 +122,7 @@ async function startBot() {
 
             if (connection === 'open') {
                 console.log(`🟢 BOT ONLINE - ${sock.user?.id || 'unknown'}`);
-                validationErrorCount = 0; // reset count after success
+                validationErrorCount = 0;
                 isRestarting = false;
             }
 
@@ -115,7 +131,6 @@ async function startBot() {
                 const statusCode = error?.output?.statusCode;
                 console.log('🔴 CONNECTION CLOSED');
 
-                // Kugundua kama kosa ni la validation (session batili)
                 const isValidationError = error?.message?.includes('validation') ||
                                          error?.message?.includes('public') ||
                                          statusCode === 403;
@@ -124,9 +139,8 @@ async function startBot() {
                     validationErrorCount++;
                     console.log(`⚠️ Validation error #${validationErrorCount}`);
                     if (validationErrorCount >= 3) {
-                        console.log('❌ Session imetambuliwa kuwa batili. Inafutwa na kuanza upya...');
-                        deleteSessionAndReset();
-                        validationErrorCount = 0;
+                        console.log('❌ Session imetambuliwa kuwa batili. Inafutwa...');
+                        deleteSessionAndMarkInvalid();
                         setTimeout(() => {
                             isRestarting = false;
                             startBot();
@@ -144,26 +158,31 @@ async function startBot() {
                     }, 5000);
                 } else {
                     console.log('❌ Logged out. Futa session.json na uanze upya.');
-                    deleteSessionAndReset();
+                    deleteSessionAndMarkInvalid();
                 }
             }
         });
 
         // --------------------------------------------------------
-        // 4. Omba pairing code TU ikiwa hakuna creds zilizosajiliwa
+        // 5. Omba pairing code tu ikiwa hakuna creds zilizosajiliwa
+        //    Subiri kidogo ili socket iwe tayari kikamilifu
         // --------------------------------------------------------
         const isRegistered = authState.creds && authState.creds.registered === true;
         if (!isRegistered && PHONE_NUMBER) {
+            // Subiri sekunde 2 ili socket iwe stable
+            await new Promise(resolve => setTimeout(resolve, 2000));
             try {
                 const code = await sock.requestPairingCode(PHONE_NUMBER);
                 console.log('🔑 PAIRING CODE:', code);
                 console.log('💡 Ingiza code kwenye WhatsApp > Linked Devices');
             } catch (e) {
                 console.log('❌ Pairing error:', e.message);
-                console.log('⚠️ Hakikisha PHONE_NUMBER iko sahihi kwenye .env');
+                if (e.message.includes('public')) {
+                    console.log('⚠️ Tatizo la muundo. Hakikisha PHONE_NUMBER iko sahihi (bila + au nafasi).');
+                }
             }
         } else if (!isRegistered) {
-            console.log('⚠️ Hakuna session na hakuna PHONE_NUMBER. Weka SESSION_JSON au PHONE_NUMBER');
+            console.log('⚠️ Hakuna session na hakuna PHONE_NUMBER. Weka PHONE_NUMBER kwenye .env');
         } else {
             console.log('✅ Session tayari imesajiliwa. Hakuna pairing inayohitajika.');
         }
