@@ -1,4 +1,3 @@
-// session-db.js – Persistent session storage for Baileys v7 using JSONB (ESM)
 import { Pool } from 'pg';
 import { initAuthCreds, makeCacheableSignalKeyStore } from '@whiskeysockets/baileys';
 
@@ -24,8 +23,7 @@ export async function initializeDatabase() {
         await client.query(`
             CREATE TABLE IF NOT EXISTS wa_sessions (
                 session_id TEXT PRIMARY KEY,
-                creds JSONB NOT NULL,
-                keys JSONB NOT NULL,
+                state JSONB NOT NULL,
                 updated_at TIMESTAMPTZ DEFAULT NOW()
             )
         `);
@@ -39,18 +37,12 @@ export async function initializeDatabase() {
     }
 }
 
-async function loadSession(sessionId) {
+async function loadState(sessionId) {
     const client = await getPool().connect();
     try {
-        const res = await client.query(
-            `SELECT creds, keys FROM wa_sessions WHERE session_id = $1`,
-            [sessionId]
-        );
+        const res = await client.query(`SELECT state FROM wa_sessions WHERE session_id = $1`, [sessionId]);
         if (res.rows.length === 0) return null;
-        return {
-            creds: res.rows[0].creds,
-            keys: res.rows[0].keys
-        };
+        return res.rows[0].state;
     } catch (err) {
         console.error('[session-db] Load error:', err.message);
         return null;
@@ -59,17 +51,17 @@ async function loadSession(sessionId) {
     }
 }
 
-async function saveSession(sessionId, creds, keys) {
+async function saveState(sessionId, state) {
     const client = await getPool().connect();
     try {
         await client.query(
-            `INSERT INTO wa_sessions (session_id, creds, keys, updated_at)
-             VALUES ($1, $2, $3, NOW())
+            `INSERT INTO wa_sessions (session_id, state, updated_at)
+             VALUES ($1, $2, NOW())
              ON CONFLICT (session_id) DO UPDATE
-             SET creds = EXCLUDED.creds, keys = EXCLUDED.keys, updated_at = NOW()`,
-            [sessionId, creds, keys]
+             SET state = EXCLUDED.state, updated_at = NOW()`,
+            [sessionId, state]
         );
-        console.log('[session-db] Session saved/updated (JSONB)');
+        console.log('[session-db] State saved');
     } catch (err) {
         console.error('[session-db] Save error:', err.message);
     } finally {
@@ -89,12 +81,11 @@ export async function deleteSession(sessionId) {
     }
 }
 
-// 🧹 NEW: Delete all sessions
 export async function deleteAllSessions() {
     const client = await getPool().connect();
     try {
         const result = await client.query(`DELETE FROM wa_sessions`);
-        console.log(`[session-db] Deleted ${result.rowCount} session(s) from database.`);
+        console.log(`[session-db] Deleted ${result.rowCount} session(s)`);
     } catch (err) {
         console.error('[session-db] Delete all error:', err.message);
     } finally {
@@ -102,12 +93,12 @@ export async function deleteAllSessions() {
     }
 }
 
-// Main auth state for Baileys v7 (with cacheable key store)
 export async function usePostgresAuthState(sessionId) {
-    const saved = await loadSession(sessionId);
-    let creds = saved ? saved.creds : initAuthCreds();
-    let keysStore = saved ? saved.keys : {};
+    let saved = await loadState(sessionId);
+    let creds = saved?.creds || initAuthCreds();
+    let keysStore = saved?.keys || {};
 
+    // Basic key-value store
     const keyStore = {
         get: async (type, ids) => {
             const result = {};
@@ -136,16 +127,17 @@ export async function usePostgresAuthState(sessionId) {
                 }
             }
             if (changed) {
-                await saveSession(sessionId, creds, keysStore);
+                await saveState(sessionId, { creds, keys: keysStore });
             }
         }
     };
 
     const keys = makeCacheableSignalKeyStore(keyStore, null);
-    
+
     const saveCreds = async () => {
-        await saveSession(sessionId, creds, keysStore);
-        console.log('[session-db] Creds updated (saveCreds)');
+        // creds object is mutated by Baileys, so we save it as is
+        await saveState(sessionId, { creds, keys: keysStore });
+        console.log('[session-db] Creds updated');
     };
 
     return {
