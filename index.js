@@ -10,13 +10,11 @@ const {
     DisconnectReason,
     Browsers,
     makeCacheableSignalKeyStore,
+    useMultiFileAuthState,       // <-- ADDED
 } = require('@whiskeysockets/baileys');
 
-const {
-    initializeDatabase,
-    usePostgresAuthState,
-    deleteSession,
-} = require('./session-db');
+// Keep only initializeDatabase from session-db (for AI memory table)
+const { initializeDatabase } = require('./session-db');
 
 // Load config (global variables kama prefix, owner, n.k.)
 require('./config');
@@ -26,7 +24,7 @@ const { loadCommands, handleMessage, setupContactListener } = require('./lib/han
 
 const logger = pino({ level: 'info' });
 
-const SESSION_ID   = process.env.SESSION_ID || 'queen_anita_v5';
+const SESSION_ID   = process.env.SESSION_ID || 'queen_anita_v5';  // not used for file auth, but keep
 const PHONE_NUMBER = process.env.PHONE_NUMBER?.trim();
 
 // ─── Logger ─────────────────────────────────────────
@@ -45,7 +43,7 @@ log.blank();
 console.log('  ╔════════════════════════════════════════════╗');
 console.log('  ║       QUEEN_ANITA-V5   ·   RUNTIME         ║');
 console.log('  ║       WhatsApp Bot   ·   Baileys           ║');
-console.log('  ║       Session  ·   PostgreSQL (Railway)    ║');
+console.log('  ║       Session  ·   File System (./sessions)║');  // Updated banner
 console.log('  ╚════════════════════════════════════════════╝');
 log.blank();
 
@@ -104,12 +102,13 @@ async function startBot() {
         loadCommands();
         log.success('Commands zimepakiwa.');
 
-        const { state, saveCreds } = await usePostgresAuthState(SESSION_ID);
-        
+        // ✅ USE FILE-BASED AUTH (works 100% with v7)
+        const { state, saveCreds } = await useMultiFileAuthState('./sessions');
+
         // v7 requires msgRetryCounterCache
         const msgRetryCounterCache = new NodeCache();
 
-        // 🔧 FIX 1: Properly destroy old socket with a delay
+        // Properly destroy old socket with a delay
         if (sock) {
             try {
                 sock.ev.removeAllListeners();
@@ -117,7 +116,6 @@ async function startBot() {
                 sock.end?.(new Error('Restarting'));
             } catch (e) {}
             sock = null;
-            // Wait for server to recognise the closure
             await new Promise(resolve => setTimeout(resolve, 2000));
         }
 
@@ -126,10 +124,10 @@ async function startBot() {
                 creds: state.creds,
                 keys: makeCacheableSignalKeyStore(state.keys, logger),
             },
-            msgRetryCounterCache,       // REQUIRED in v7
+            msgRetryCounterCache,
             logger,
             printQRInTerminal: false,
-            browser: Browsers.ubuntu('Chrome'),  // v7 style
+            browser: Browsers.ubuntu('Chrome'),
             connectTimeoutMs: 120000,
             keepAliveIntervalMs: 30000,
             defaultQueryTimeoutMs: undefined,
@@ -146,16 +144,15 @@ async function startBot() {
 
             if (connection) log.state(`Connection  →  ${connection}`);
 
+            // Request pairing code only if new session (no creds.registered)
             if (!pairingRequested && !state.creds.registered && connection !== 'close') {
                 setTimeout(async () => {
                     if (pairingRequested) return;
                     try {
                         pairingRequested = true;
                         console.log(`📱 Inaomba pairing code kwa: ${PHONE_NUMBER}`);
-
                         const code = await sock.requestPairingCode(PHONE_NUMBER);
                         displayPairingCode(code);
-
                     } catch (err) {
                         console.error('❌ Pairing code imeshindwa:', err.message);
                         pairingRequested = false;
@@ -167,7 +164,7 @@ async function startBot() {
                 clearOpenTimer();
                 log.div();
                 log.success('BOT IMEUNGANIKA ✔');
-                log.success('Session imehifadhiwa kwenye PostgreSQL (Railway)');
+                log.success('Session imehifadhiwa kwenye folder ./sessions');
                 log.div();
                 isConnecting = false;
                 bootLock = false;
@@ -175,22 +172,21 @@ async function startBot() {
 
             if (connection === 'close') {
                 clearOpenTimer();
-
                 const code = lastDisconnect?.error?.output?.statusCode;
-
                 log.div();
                 log.error(`Muunganiko Umevunjika → [${code ?? '?'}]`);
 
                 isConnecting = false;
                 bootLock = false;
 
-                // 🔧 FIX 2: Different delays for different error codes
                 if (code === 440) {
                     log.warn('Connection replaced (440) – waiting 15s before restart');
                     setTimeout(startBot, 15000);
                 } else if (code === DisconnectReason.loggedOut || code === 401) {
                     log.warn('Session invalid. Inafuta session...');
-                    await deleteSession(SESSION_ID);
+                    // Optionally delete the session folder
+                    const fs = require('fs');
+                    if (fs.existsSync('./sessions')) fs.rmSync('./sessions', { recursive: true, force: true });
                     setTimeout(startBot, 10000);
                 } else {
                     log.warn('Unknown disconnect – restarting in 7s');
@@ -199,7 +195,7 @@ async function startBot() {
             }
         });
 
-        // messages.upsert – no changes needed (works with LIDs automatically)
+        // messages.upsert – unchanged
         sock.ev.on('messages.upsert', async ({ messages, type }) => {
             if (type !== 'notify') return;
             const msg = messages[0];
@@ -226,7 +222,7 @@ async function startBot() {
         }, 180000);
 
         if (state.creds.registered) {
-            log.success('Session ipo DB — Inaunganika...');
+            log.success('Session ipo file system — Inaunganika...');
         } else {
             log.info('Session mpya — inasubiri pairing...');
         }
@@ -242,8 +238,8 @@ async function startBot() {
 // ─── ENTRY POINT ─────────────────────────────────────
 (async () => {
     try {
-        log.info('Inaunganika na PostgreSQL...');
-        await initializeDatabase();
+        log.info('Inaunganika na PostgreSQL (kwa ajili ya AI memory tu)...');
+        await initializeDatabase();  // still creates ai_memory table if needed
         log.blank();
         await startBot();
     } catch (err) {
