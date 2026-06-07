@@ -4,10 +4,11 @@ const dotenv = require('dotenv');
 dotenv.config();
 
 const pino = require('pino');
+const NodeCache = require('node-cache');
 const {
     default: makeWASocket,
     DisconnectReason,
-    fetchLatestBaileysVersion,
+    Browsers,
     makeCacheableSignalKeyStore,
 } = require('@whiskeysockets/baileys');
 
@@ -76,7 +77,7 @@ function clearOpenTimer() {
     openTimer = null;
 }
 
-// ========== PAIRING LOGIC (REPLACED ONLY) ==========
+// ========== PAIRING LOGIC ==========
 function displayPairingCode(code) {
     console.log('\n╔══════════════════════════╗');
     console.log('║   🔑 PAIRING CODE        ║');
@@ -104,7 +105,9 @@ async function startBot() {
         log.success('Commands zimepakiwa.');
 
         const { state, saveCreds } = await usePostgresAuthState(SESSION_ID);
-        const { version } = await fetchLatestBaileysVersion();
+        
+        // v7 requires msgRetryCounterCache
+        const msgRetryCounterCache = new NodeCache();
 
         if (sock) {
             try {
@@ -115,14 +118,15 @@ async function startBot() {
         }
 
         sock = makeWASocket({
-            version,
+            // v7 no longer needs version – uses latest internal
             auth: {
                 creds: state.creds,
                 keys: makeCacheableSignalKeyStore(state.keys, logger),
             },
+            msgRetryCounterCache,       // REQUIRED in v7
             logger,
             printQRInTerminal: false,
-            browser: ['Ubuntu', 'Chrome', '120.0.0'],
+            browser: Browsers.ubuntu('Chrome'),  // v7 style
             connectTimeoutMs: 120000,
             keepAliveIntervalMs: 30000,
             shouldSyncHistoryMessage: () => false,
@@ -188,14 +192,13 @@ async function startBot() {
             }
         });
 
-        // ✅ FIXED: messages.upsert with log to show incoming messages
+        // messages.upsert – no changes needed
         sock.ev.on('messages.upsert', async ({ messages, type }) => {
             if (type !== 'notify') return;
             const msg = messages[0];
             if (!msg.message) return;
             if (msg.key.fromMe) return;
 
-            // Extract text for logging
             const text = msg.message?.conversation ||
                          msg.message?.extendedTextMessage?.text ||
                          '[non-text message]';
