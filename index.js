@@ -13,13 +13,11 @@ import './config.js';
 import { loadCommands, handleMessage, setupContactListener } from './lib/handler.js';
 import { initializeDatabase, usePostgresAuthState, deleteSession, deleteAllSessions } from './session-db.js';
 
-const logger = pino({ level: 'info' });
+const logger = pino({ level: 'silent' });
 const PHONE_NUMBER = process.env.PHONE_NUMBER?.trim();
 const SESSION_ID = process.env.SESSION_ID || 'queen_anita_v5';
 
-// ========== MUDA WA KUSUBIRI KABLA YA KUOMBA PAIRING CODE (milliseconds) ==========
-const PAIRING_DELAY = 5000; // sekunde 5
-
+const PAIRING_DELAY = 5000;
 const CLEAN_SESSIONS = process.env.CLEAN_SESSIONS === 'true';
 
 const log = {
@@ -54,6 +52,7 @@ let isConnecting = false;
 let pairingRequested = false;
 let bootLock = false;
 let openTimer = null;
+let hasEverOpened = false; // ✅ track kama imefika 'open' kabla
 
 function clearOpenTimer() {
     if (openTimer) clearTimeout(openTimer);
@@ -111,14 +110,17 @@ async function startBot() {
             patchMessageBeforeSending: (msg) => msg,
         });
 
-        sock.ev.on('creds.update', saveCreds);
+        // ✅ await saveCreds ili DB isave kabla ya kitu kingine kutokea
+        sock.ev.on('creds.update', async (update) => {
+            await saveCreds(update);
+        });
+
         setupContactListener(sock);
 
         sock.ev.on('connection.update', async (update) => {
             const { connection, lastDisconnect } = update;
             if (connection) log.state(`Connection  →  ${connection}`);
 
-            // ✅ Live check – inasoma state.creds kwa wakati halisi
             if (!pairingRequested && connection === 'connecting') {
                 const isRegistered = !!(state.creds?.me || state.creds?.account);
                 if (!isRegistered) {
@@ -126,7 +128,6 @@ async function startBot() {
                     log.info(`Subiri sekunde ${PAIRING_DELAY / 1000} kabla ya kuomba pairing code...`);
                     setTimeout(async () => {
                         try {
-                            // ✅ Double-check tena baada ya delay – pengine imeshaingia
                             if (state.creds?.me || state.creds?.account) {
                                 log.success('Session imeshaingia kabla ya pairing — skip.');
                                 return;
@@ -146,6 +147,7 @@ async function startBot() {
 
             if (connection === 'open') {
                 clearOpenTimer();
+                hasEverOpened = true; // ✅ mark kwamba imefika open
                 log.div();
                 log.success('BOT IMEUNGANIKA ✔');
                 log.success('Session imehifadhiwa kwenye PostgreSQL (JSONB)');
@@ -157,10 +159,18 @@ async function startBot() {
             if (connection === 'close') {
                 clearOpenTimer();
                 const code = lastDisconnect?.error?.output?.statusCode;
-                log.div();
-                log.error(`Muunganiko Umevunjika → [${code ?? '?'}]`);
                 isConnecting = false;
                 bootLock = false;
+
+                // ✅ 515 = Baileys inataka ku-reconnect yenyewe baada ya pairing
+                // Usirestart — subiri Baileys ifanye kazi yake
+                if (code === 515) {
+                    log.info('Pairing restart (515) — Baileys inaunganika upya yenyewe...');
+                    return; // ← MUHIMU: usifanye startBot
+                }
+
+                log.div();
+                log.error(`Muunganiko Umevunjika → [${code ?? '?'}]`);
 
                 if (code === 440) {
                     log.warn('Connection replaced (440) – waiting 15s before restart');
@@ -169,8 +179,12 @@ async function startBot() {
                     log.warn('Session invalid. Inafuta session kutoka PostgreSQL...');
                     await deleteSession(SESSION_ID);
                     setTimeout(startBot, 10000);
+                } else if (!hasEverOpened) {
+                    // ✅ Haijafika 'open' kabla — pengine validation error, subiri kidogo zaidi
+                    log.warn(`Haijaunganika kabla — restarting in 15s`);
+                    setTimeout(startBot, 15000);
                 } else {
-                    log.warn('Unknown disconnect – restarting in 7s');
+                    log.warn('Disconnect baada ya open — restarting in 7s');
                     setTimeout(startBot, 7000);
                 }
             }
@@ -189,7 +203,6 @@ async function startBot() {
             await handleMessage(sock, msg);
         });
 
-        // ✅ Timeout ya dakika 3 – ikiwa haijaunganika restart
         openTimer = setTimeout(() => {
             log.warn('Timeout — restart...');
             isConnecting = false;
@@ -198,7 +211,6 @@ async function startBot() {
             setTimeout(startBot, 7000);
         }, 180000);
 
-        // ✅ Log hali ya session baada ya socket kuanzishwa
         if (state.creds?.me || state.creds?.account) {
             log.success('Session ipo PostgreSQL — Inaunganika...');
         } else {
