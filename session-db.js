@@ -1,8 +1,6 @@
-// session-db.js – Persistent session storage for Baileys v7 using BYTEA
-'use strict';
-
-const { Pool } = require('pg');
-const { initAuthCreds } = require('@whiskeysockets/baileys');
+// session-db.js – Persistent session storage for Baileys v7 using JSONB (ESM)
+import { Pool } from 'pg';
+import { initAuthCreds } from '@whiskeysockets/baileys';
 
 let pool = null;
 
@@ -20,19 +18,19 @@ function getPool() {
     return pool;
 }
 
-async function initializeDatabase() {
+export async function initializeDatabase() {
     const client = await getPool().connect();
     try {
-        // Table with BYTEA columns for raw binary storage
+        // Use JSONB columns – hii inaepuka shida za BYTEA
         await client.query(`
-            CREATE TABLE IF NOT EXISTS wa_sessions_bin (
+            CREATE TABLE IF NOT EXISTS wa_sessions (
                 session_id TEXT PRIMARY KEY,
-                creds BYTEA NOT NULL,
-                keys BYTEA NOT NULL,
+                creds JSONB NOT NULL,
+                keys JSONB NOT NULL,
                 updated_at TIMESTAMPTZ DEFAULT NOW()
             )
         `);
-        console.log('[session-db] Table "wa_sessions_bin" ready (BYTEA).');
+        console.log('[session-db] Table "wa_sessions" ready (JSONB).');
         return true;
     } catch (err) {
         console.error('[session-db] Table creation failed:', err.message);
@@ -46,18 +44,14 @@ async function loadSession(sessionId) {
     const client = await getPool().connect();
     try {
         const res = await client.query(
-            `SELECT creds, keys FROM wa_sessions_bin WHERE session_id = $1`,
+            `SELECT creds, keys FROM wa_sessions WHERE session_id = $1`,
             [sessionId]
         );
         if (res.rows.length === 0) return null;
-        // creds and keys are returned as Buffers (BYTEA)
+        // creds and keys are already objects (JSONB)
         const creds = res.rows[0].creds;
         const keys = res.rows[0].keys;
-        // Baileys expects objects – parse the Buffers (they contain JSON)
-        return {
-            creds: JSON.parse(creds.toString('utf8')),
-            keys: JSON.parse(keys.toString('utf8'))
-        };
+        return { creds, keys };
     } catch (err) {
         console.error('[session-db] Load error:', err.message);
         return null;
@@ -69,17 +63,14 @@ async function loadSession(sessionId) {
 async function saveSession(sessionId, creds, keys) {
     const client = await getPool().connect();
     try {
-        // Convert objects to JSON strings, then to Buffers
-        const credsBuf = Buffer.from(JSON.stringify(creds), 'utf8');
-        const keysBuf = Buffer.from(JSON.stringify(keys), 'utf8');
         await client.query(
-            `INSERT INTO wa_sessions_bin (session_id, creds, keys, updated_at)
+            `INSERT INTO wa_sessions (session_id, creds, keys, updated_at)
              VALUES ($1, $2, $3, NOW())
              ON CONFLICT (session_id) DO UPDATE
              SET creds = EXCLUDED.creds, keys = EXCLUDED.keys, updated_at = NOW()`,
-            [sessionId, credsBuf, keysBuf]
+            [sessionId, creds, keys]   // creds na keys ni objects, driver itageuza JSONB automatically
         );
-        console.log('[session-db] Session saved/updated (binary)');
+        console.log('[session-db] Session saved/updated (JSONB)');
     } catch (err) {
         console.error('[session-db] Save error:', err.message);
     } finally {
@@ -87,10 +78,10 @@ async function saveSession(sessionId, creds, keys) {
     }
 }
 
-async function deleteSession(sessionId) {
+export async function deleteSession(sessionId) {
     const client = await getPool().connect();
     try {
-        await client.query(`DELETE FROM wa_sessions_bin WHERE session_id = $1`, [sessionId]);
+        await client.query(`DELETE FROM wa_sessions WHERE session_id = $1`, [sessionId]);
         console.log('[session-db] Session deleted');
     } catch (err) {
         console.error('[session-db] Delete error:', err.message);
@@ -100,12 +91,12 @@ async function deleteSession(sessionId) {
 }
 
 // Main auth state for Baileys v7
-async function usePostgresAuthState(sessionId) {
+export async function usePostgresAuthState(sessionId) {
     let session = await loadSession(sessionId);
     let creds = session ? session.creds : initAuthCreds();
     let keysStore = session ? session.keys : {};
 
-    // The keys interface as expected by Baileys
+    // Keys interface as expected by Baileys v7
     const keys = {
         get: async (type, ids) => {
             const result = {};
@@ -146,9 +137,3 @@ async function usePostgresAuthState(sessionId) {
 
     return { state: { creds, keys }, saveCreds };
 }
-
-module.exports = {
-    initializeDatabase,
-    usePostgresAuthState,
-    deleteSession,
-};
