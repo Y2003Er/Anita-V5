@@ -7,15 +7,15 @@ import {
     default as makeWASocket,
     DisconnectReason,
     Browsers,
-    useMultiFileAuthState,
 } from '@whiskeysockets/baileys';
 
-// Import local modules (lazima ziwe ES modules)
 import './config.js';
 import { loadCommands, handleMessage, setupContactListener } from './lib/handler.js';
+import { initializeDatabase, usePostgresAuthState, deleteSession } from './session-db.js';
 
 const logger = pino({ level: 'info' });
 const PHONE_NUMBER = process.env.PHONE_NUMBER?.trim();
+const SESSION_ID = process.env.SESSION_ID || 'queen_anita_v5';
 
 const log = {
     info:    (msg) => console.log(`  ✦  ${msg}`),
@@ -31,10 +31,14 @@ log.blank();
 console.log('  ╔════════════════════════════════════════════╗');
 console.log('  ║       QUEEN_ANITA-V5   ·   RUNTIME         ║');
 console.log('  ║       WhatsApp Bot   ·   Baileys v7        ║');
-console.log('  ║       Session  ·   Local Folder (./session)║');
+console.log('  ║       Session  ·   PostgreSQL (JSONB)      ║');
 console.log('  ╚════════════════════════════════════════════╝');
 log.blank();
 
+if (!process.env.DATABASE_URL) {
+    log.error('DATABASE_URL haipo — Bot imesimama.');
+    process.exit(1);
+}
 if (!PHONE_NUMBER || !/^\d{10,15}$/.test(PHONE_NUMBER)) {
     log.error('PHONE_NUMBER si sahihi (mfano: 255753595142)');
     process.exit(1);
@@ -76,8 +80,8 @@ async function startBot() {
         loadCommands();
         log.success('Commands zimepakiwa.');
 
-        // Session local folder
-        const { state, saveCreds } = await useMultiFileAuthState('./session');
+        // PostgreSQL auth state (JSONB, imerekebishwa kwa v7)
+        const { state, saveCreds } = await usePostgresAuthState(SESSION_ID);
         const msgRetryCounterCache = new NodeCache();
 
         if (sock) {
@@ -106,12 +110,11 @@ async function startBot() {
         sock.ev.on('creds.update', saveCreds);
         setupContactListener(sock);
 
-        // Event: connection update (imebadilishwa kidogo kwa v7)
         sock.ev.on('connection.update', async (update) => {
             const { connection, lastDisconnect } = update;
             if (connection) log.state(`Connection  →  ${connection}`);
 
-            // Kwa v7, tumia state.creds?.account badala ya state.creds?.me
+            // Baileys v7 hutumia state.creds?.account (si .me)
             const isRegistered = !!state.creds?.account;
             if (!pairingRequested && !isRegistered && connection === 'connecting') {
                 pairingRequested = true;
@@ -131,7 +134,7 @@ async function startBot() {
                 clearOpenTimer();
                 log.div();
                 log.success('BOT IMEUNGANIKA ✔');
-                log.success('Session imehifadhiwa kwenye folder ./session');
+                log.success('Session imehifadhiwa kwenye PostgreSQL (JSONB)');
                 log.div();
                 isConnecting = false;
                 bootLock = false;
@@ -149,8 +152,8 @@ async function startBot() {
                     log.warn('Connection replaced (440) – waiting 15s before restart');
                     setTimeout(startBot, 15000);
                 } else if (code === DisconnectReason.loggedOut || code === 401) {
-                    log.warn('Session invalid. Inafuta folder ./session...');
-                    import('fs').then(fs => fs.promises.rm('./session', { recursive: true, force: true })).catch(()=>{});
+                    log.warn('Session invalid. Inafuta session kutoka PostgreSQL...');
+                    await deleteSession(SESSION_ID);
                     setTimeout(startBot, 10000);
                 } else {
                     log.warn('Unknown disconnect – restarting in 7s');
@@ -179,7 +182,7 @@ async function startBot() {
         }, 180000);
 
         if (state.creds?.account) {
-            log.success('Session ipo folder ./session — Inaunganika...');
+            log.success('Session ipo PostgreSQL — Inaunganika...');
         } else {
             log.info('Session mpya — inasubiri pairing...');
         }
@@ -192,8 +195,15 @@ async function startBot() {
     }
 }
 
-// Anza bot
-startBot().catch(err => {
-    log.error(`Start error: ${err.message}`);
-    process.exit(1);
-});
+// Anza kwa kuinitialize database kisha start bot
+(async () => {
+    try {
+        log.info('Inaunganika na PostgreSQL...');
+        await initializeDatabase();
+        log.blank();
+        await startBot();
+    } catch (err) {
+        log.error(`DB error: ${err.message}`);
+        process.exit(1);
+    }
+})();
