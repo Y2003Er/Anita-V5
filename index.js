@@ -1,19 +1,18 @@
-'use strict';
-
-const dotenv = require('dotenv');
+import dotenv from 'dotenv';
 dotenv.config();
 
-const pino = require('pino');
-const NodeCache = require('node-cache');
-const {
-    default: makeWASocket,
+import pino from 'pino';
+import NodeCache from 'node-cache';
+import {
+    default as makeWASocket,
     DisconnectReason,
     Browsers,
     useMultiFileAuthState,
-} = require('@whiskeysockets/baileys');
+} from '@whiskeysockets/baileys';
 
-require('./config');
-const { loadCommands, handleMessage, setupContactListener } = require('./lib/handler');
+// Import local modules (lazima ziwe ES modules)
+import './config.js';
+import { loadCommands, handleMessage, setupContactListener } from './lib/handler.js';
 
 const logger = pino({ level: 'info' });
 const PHONE_NUMBER = process.env.PHONE_NUMBER?.trim();
@@ -31,7 +30,7 @@ const log = {
 log.blank();
 console.log('  ╔════════════════════════════════════════════╗');
 console.log('  ║       QUEEN_ANITA-V5   ·   RUNTIME         ║');
-console.log('  ║       WhatsApp Bot   ·   Baileys           ║');
+console.log('  ║       WhatsApp Bot   ·   Baileys v7        ║');
 console.log('  ║       Session  ·   Local Folder (./session)║');
 console.log('  ╚════════════════════════════════════════════╝');
 log.blank();
@@ -77,7 +76,7 @@ async function startBot() {
         loadCommands();
         log.success('Commands zimepakiwa.');
 
-        // Session local folder (itajitengeneza kiotomatiki)
+        // Session local folder
         const { state, saveCreds } = await useMultiFileAuthState('./session');
         const msgRetryCounterCache = new NodeCache();
 
@@ -107,18 +106,15 @@ async function startBot() {
         sock.ev.on('creds.update', saveCreds);
         setupContactListener(sock);
 
-        // Event: connection update (iliyorekebishwa)
+        // Event: connection update (imebadilishwa kidogo kwa v7)
         sock.ev.on('connection.update', async (update) => {
             const { connection, lastDisconnect } = update;
             if (connection) log.state(`Connection  →  ${connection}`);
 
-            // ------------------------------------------------------------------
-            // PAIRING CODE: inaombwa mara MOJA tu, wakati wa connecting,
-            // na tu ikiwa HAKUNA session (state.creds?.me ni false/undefined)
-            // ------------------------------------------------------------------
-            if (!pairingRequested && !state.creds?.me && connection === 'connecting') {
+            // Kwa v7, tumia state.creds?.account badala ya state.creds?.me
+            const isRegistered = !!state.creds?.account;
+            if (!pairingRequested && !isRegistered && connection === 'connecting') {
                 pairingRequested = true;
-                // Tuma pairing code baada ya sekunde 1 ili kuwa salama
                 setTimeout(async () => {
                     try {
                         console.log(`📱 Inaomba pairing code kwa: ${PHONE_NUMBER}`);
@@ -154,8 +150,7 @@ async function startBot() {
                     setTimeout(startBot, 15000);
                 } else if (code === DisconnectReason.loggedOut || code === 401) {
                     log.warn('Session invalid. Inafuta folder ./session...');
-                    const fs = require('fs').promises;
-                    try { await fs.rm('./session', { recursive: true, force: true }); } catch(e) {}
+                    import('fs').then(fs => fs.promises.rm('./session', { recursive: true, force: true })).catch(()=>{});
                     setTimeout(startBot, 10000);
                 } else {
                     log.warn('Unknown disconnect – restarting in 7s');
@@ -175,7 +170,6 @@ async function startBot() {
             await handleMessage(sock, msg);
         });
 
-        // Timeout ya jumla
         openTimer = setTimeout(() => {
             log.warn('Timeout — restart...');
             isConnecting = false;
@@ -184,7 +178,7 @@ async function startBot() {
             setTimeout(startBot, 7000);
         }, 180000);
 
-        if (state.creds?.me) {
+        if (state.creds?.account) {
             log.success('Session ipo folder ./session — Inaunganika...');
         } else {
             log.info('Session mpya — inasubiri pairing...');
@@ -198,7 +192,7 @@ async function startBot() {
     }
 }
 
-// Anza bot moja kwa moja
+// Anza bot
 startBot().catch(err => {
     log.error(`Start error: ${err.message}`);
     process.exit(1);
