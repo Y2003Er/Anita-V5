@@ -9,20 +9,16 @@ const {
     default: makeWASocket,
     DisconnectReason,
     Browsers,
-    makeCacheableSignalKeyStore,
+    useMultiFileAuthState,      // ← badala ya PostgreSQL
 } = require('@whiskeysockets/baileys');
 
-const {
-    initializeDatabase,
-    usePostgresAuthState,
-    deleteSession,
-} = require('./session-db');
+// Zimeondolewa: initializeDatabase, usePostgresAuthState, deleteSession
+// const { ... } = require('./session-db');  // ← sihitaji tena
 
 require('./config');
 const { loadCommands, handleMessage, setupContactListener } = require('./lib/handler');
 
 const logger = pino({ level: 'info' });
-const SESSION_ID = process.env.SESSION_ID || 'queen_anita_v5';
 const PHONE_NUMBER = process.env.PHONE_NUMBER?.trim();
 
 const log = {
@@ -39,14 +35,11 @@ log.blank();
 console.log('  ╔════════════════════════════════════════════╗');
 console.log('  ║       QUEEN_ANITA-V5   ·   RUNTIME         ║');
 console.log('  ║       WhatsApp Bot   ·   Baileys           ║');
-console.log('  ║       Session  ·   PostgreSQL (Railway)    ║');
+console.log('  ║       Session  ·   Local Folder (./session)║');  // ← imebadilishwa
 console.log('  ╚════════════════════════════════════════════╝');
 log.blank();
 
-if (!process.env.DATABASE_URL) {
-    log.error('DATABASE_URL haipo — Bot imesimama.');
-    process.exit(1);
-}
+// Uhakiki wa PHONE_NUMBER pekee (hakuna DATABASE_URL tena)
 if (!PHONE_NUMBER || !/^\d{10,15}$/.test(PHONE_NUMBER)) {
     log.error('PHONE_NUMBER si sahihi (mfano: 255753595142)');
     process.exit(1);
@@ -84,8 +77,10 @@ async function startBot() {
         loadCommands();
         log.success('Commands zimepakiwa.');
 
-        // Use the fixed PostgreSQL auth state
-        const { state, saveCreds } = await usePostgresAuthState(SESSION_ID);
+        // ---------- BADILISHA HAPA: local folder session ----------
+        const { state, saveCreds } = await useMultiFileAuthState('./session');
+        // ---------------------------------------------------------
+
         const msgRetryCounterCache = new NodeCache();
 
         if (sock) {
@@ -99,10 +94,7 @@ async function startBot() {
         }
 
         sock = makeWASocket({
-            auth: {
-                creds: state.creds,
-                keys: makeCacheableSignalKeyStore(state.keys, logger),
-            },
+            auth: state,   // ← state ina creds na keys (tayari ni cacheable)
             msgRetryCounterCache,
             logger,
             printQRInTerminal: false,
@@ -121,7 +113,8 @@ async function startBot() {
             const { connection, lastDisconnect } = update;
             if (connection) log.state(`Connection  →  ${connection}`);
 
-            if (!pairingRequested && !state.creds.registered && connection !== 'close') {
+            // state.creds.registered inafanya kazi sawa na kabla
+            if (!pairingRequested && !state.creds?.registered && connection !== 'close') {
                 setTimeout(async () => {
                     if (pairingRequested) return;
                     try {
@@ -140,7 +133,7 @@ async function startBot() {
                 clearOpenTimer();
                 log.div();
                 log.success('BOT IMEUNGANIKA ✔');
-                log.success('Session imehifadhiwa kwenye PostgreSQL (Railway)');
+                log.success('Session imehifadhiwa kwenye folder ./session'); // ← imebadilishwa
                 log.div();
                 isConnecting = false;
                 bootLock = false;
@@ -158,8 +151,9 @@ async function startBot() {
                     log.warn('Connection replaced (440) – waiting 15s before restart');
                     setTimeout(startBot, 15000);
                 } else if (code === DisconnectReason.loggedOut || code === 401) {
-                    log.warn('Session invalid. Inafuta session...');
-                    await deleteSession(SESSION_ID);
+                    log.warn('Session invalid. Inafuta folder ./session...');
+                    const fs = require('fs').promises;
+                    try { await fs.rm('./session', { recursive: true, force: true }); } catch(e) {}
                     setTimeout(startBot, 10000);
                 } else {
                     log.warn('Unknown disconnect – restarting in 7s');
@@ -186,8 +180,8 @@ async function startBot() {
             setTimeout(startBot, 7000);
         }, 180000);
 
-        if (state.creds.registered) {
-            log.success('Session ipo DB — Inaunganika...');
+        if (state.creds?.registered) {
+            log.success('Session ipo folder ./session — Inaunganika...');
         } else {
             log.info('Session mpya — inasubiri pairing...');
         }
@@ -200,14 +194,8 @@ async function startBot() {
     }
 }
 
-(async () => {
-    try {
-        log.info('Inaunganika na PostgreSQL...');
-        await initializeDatabase();
-        log.blank();
-        await startBot();
-    } catch (err) {
-        log.error(`DB error: ${err.message}`);
-        process.exit(1);
-    }
-})();
+// Anza bot moja kwa moja (hakuna DB initialization)
+startBot().catch(err => {
+    log.error(`Start error: ${err.message}`);
+    process.exit(1);
+});
