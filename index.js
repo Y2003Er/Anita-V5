@@ -10,24 +10,21 @@ const {
     DisconnectReason,
     Browsers,
     makeCacheableSignalKeyStore,
-    useMultiFileAuthState,       // <-- ADDED
 } = require('@whiskeysockets/baileys');
 
-// Keep only initializeDatabase from session-db (for AI memory table)
-const { initializeDatabase } = require('./session-db');
+const {
+    initializeDatabase,
+    usePostgresAuthState,
+    deleteSession,
+} = require('./session-db');
 
-// Load config (global variables kama prefix, owner, n.k.)
 require('./config');
-
-// Load command handler
 const { loadCommands, handleMessage, setupContactListener } = require('./lib/handler');
 
 const logger = pino({ level: 'info' });
-
-const SESSION_ID   = process.env.SESSION_ID || 'queen_anita_v5';  // not used for file auth, but keep
+const SESSION_ID = process.env.SESSION_ID || 'queen_anita_v5';
 const PHONE_NUMBER = process.env.PHONE_NUMBER?.trim();
 
-// ─── Logger ─────────────────────────────────────────
 const log = {
     info:    (msg) => console.log(`  ✦  ${msg}`),
     success: (msg) => console.log(`  ✔  ${msg}`),
@@ -38,44 +35,30 @@ const log = {
     blank:   ()    => console.log(''),
 };
 
-// ─── Banner ─────────────────────────────────────────
 log.blank();
 console.log('  ╔════════════════════════════════════════════╗');
 console.log('  ║       QUEEN_ANITA-V5   ·   RUNTIME         ║');
 console.log('  ║       WhatsApp Bot   ·   Baileys           ║');
-console.log('  ║       Session  ·   File System (./sessions)║');  // Updated banner
+console.log('  ║       Session  ·   PostgreSQL (Railway)    ║');
 console.log('  ╚════════════════════════════════════════════╝');
 log.blank();
 
-// ─── Validations ─────────────────────────────────────
 if (!process.env.DATABASE_URL) {
     log.error('DATABASE_URL haipo — Bot imesimama.');
     process.exit(1);
 }
-
-if (!PHONE_NUMBER) {
-    log.error('PHONE_NUMBER haipo — Bot imesimama.');
-    process.exit(1);
-}
-
-if (!/^\d{10,15}$/.test(PHONE_NUMBER)) {
+if (!PHONE_NUMBER || !/^\d{10,15}$/.test(PHONE_NUMBER)) {
     log.error('PHONE_NUMBER si sahihi (mfano: 255753595142)');
     process.exit(1);
 }
 
-// ─── Bot state ───────────────────────────────────────
 let sock = null;
 let isConnecting = false;
 let pairingRequested = false;
 let bootLock = false;
 let openTimer = null;
+function clearOpenTimer() { if (openTimer) clearTimeout(openTimer); openTimer = null; }
 
-function clearOpenTimer() {
-    if (openTimer) clearTimeout(openTimer);
-    openTimer = null;
-}
-
-// ========== PAIRING LOGIC ==========
 function displayPairingCode(code) {
     console.log('\n╔══════════════════════════╗');
     console.log('║   🔑 PAIRING CODE        ║');
@@ -88,7 +71,6 @@ function displayPairingCode(code) {
     console.log('👆 Popup itatokea yenyewe — bonyeza CONFIRM\n');
 }
 
-// ─── Anzisha bot ─────────────────────────────────────
 async function startBot() {
     if (bootLock || isConnecting) return;
     if (sock?.ws?.readyState === 1) return;
@@ -102,13 +84,10 @@ async function startBot() {
         loadCommands();
         log.success('Commands zimepakiwa.');
 
-        // ✅ USE FILE-BASED AUTH (works 100% with v7)
-        const { state, saveCreds } = await useMultiFileAuthState('./sessions');
-
-        // v7 requires msgRetryCounterCache
+        // Use the fixed PostgreSQL auth state
+        const { state, saveCreds } = await usePostgresAuthState(SESSION_ID);
         const msgRetryCounterCache = new NodeCache();
 
-        // Properly destroy old socket with a delay
         if (sock) {
             try {
                 sock.ev.removeAllListeners();
@@ -136,15 +115,12 @@ async function startBot() {
         });
 
         sock.ev.on('creds.update', saveCreds);
-
         setupContactListener(sock);
 
         sock.ev.on('connection.update', async (update) => {
             const { connection, lastDisconnect } = update;
-
             if (connection) log.state(`Connection  →  ${connection}`);
 
-            // Request pairing code only if new session (no creds.registered)
             if (!pairingRequested && !state.creds.registered && connection !== 'close') {
                 setTimeout(async () => {
                     if (pairingRequested) return;
@@ -164,7 +140,7 @@ async function startBot() {
                 clearOpenTimer();
                 log.div();
                 log.success('BOT IMEUNGANIKA ✔');
-                log.success('Session imehifadhiwa kwenye folder ./sessions');
+                log.success('Session imehifadhiwa kwenye PostgreSQL (Railway)');
                 log.div();
                 isConnecting = false;
                 bootLock = false;
@@ -175,7 +151,6 @@ async function startBot() {
                 const code = lastDisconnect?.error?.output?.statusCode;
                 log.div();
                 log.error(`Muunganiko Umevunjika → [${code ?? '?'}]`);
-
                 isConnecting = false;
                 bootLock = false;
 
@@ -184,9 +159,7 @@ async function startBot() {
                     setTimeout(startBot, 15000);
                 } else if (code === DisconnectReason.loggedOut || code === 401) {
                     log.warn('Session invalid. Inafuta session...');
-                    // Optionally delete the session folder
-                    const fs = require('fs');
-                    if (fs.existsSync('./sessions')) fs.rmSync('./sessions', { recursive: true, force: true });
+                    await deleteSession(SESSION_ID);
                     setTimeout(startBot, 10000);
                 } else {
                     log.warn('Unknown disconnect – restarting in 7s');
@@ -195,18 +168,13 @@ async function startBot() {
             }
         });
 
-        // messages.upsert – unchanged
         sock.ev.on('messages.upsert', async ({ messages, type }) => {
             if (type !== 'notify') return;
             const msg = messages[0];
             if (!msg.message) return;
             if (msg.key.fromMe) return;
-
-            const text = msg.message?.conversation ||
-                         msg.message?.extendedTextMessage?.text ||
-                         '[non-text message]';
+            const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text || '[non-text message]';
             console.log(`📩 Ujumbe kutoka ${msg.key.remoteJid}: ${text}`);
-
             await handleMessage(sock, msg);
         });
 
@@ -214,15 +182,12 @@ async function startBot() {
             log.warn('Timeout — restart...');
             isConnecting = false;
             bootLock = false;
-            try {
-                sock?.ev?.removeAllListeners();
-                sock?.ws?.close();
-            } catch {}
+            try { sock?.ev?.removeAllListeners(); sock?.ws?.close(); } catch {}
             setTimeout(startBot, 7000);
         }, 180000);
 
         if (state.creds.registered) {
-            log.success('Session ipo file system — Inaunganika...');
+            log.success('Session ipo DB — Inaunganika...');
         } else {
             log.info('Session mpya — inasubiri pairing...');
         }
@@ -235,11 +200,10 @@ async function startBot() {
     }
 }
 
-// ─── ENTRY POINT ─────────────────────────────────────
 (async () => {
     try {
-        log.info('Inaunganika na PostgreSQL (kwa ajili ya AI memory tu)...');
-        await initializeDatabase();  // still creates ai_memory table if needed
+        log.info('Inaunganika na PostgreSQL...');
+        await initializeDatabase();
         log.blank();
         await startBot();
     } catch (err) {
