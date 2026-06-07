@@ -92,6 +92,7 @@ function displayPairingCode(code) {
 // ─── Anzisha bot ─────────────────────────────────────
 async function startBot() {
     if (bootLock || isConnecting) return;
+    if (sock?.ws?.readyState === 1) return;
 
     bootLock = true;
     isConnecting = true;
@@ -106,7 +107,10 @@ async function startBot() {
         const { version } = await fetchLatestBaileysVersion();
 
         if (sock) {
-            try { sock.ev.removeAllListeners(); sock.ws?.close(); } catch {}
+            try {
+                sock.ev.removeAllListeners();
+                sock.ws?.close();
+            } catch {}
             sock = null;
         }
 
@@ -136,7 +140,6 @@ async function startBot() {
 
             if (connection) log.state(`Connection  →  ${connection}`);
 
-            // ─── PAIRING REQUEST (REPLACED ONLY) ───
             if (!pairingRequested && !state.creds.registered && connection !== 'close') {
                 setTimeout(async () => {
                     if (pairingRequested) return;
@@ -154,7 +157,6 @@ async function startBot() {
                 }, 3000);
             }
 
-            // ── OPEN ──
             if (connection === 'open') {
                 clearOpenTimer();
                 log.div();
@@ -165,7 +167,6 @@ async function startBot() {
                 bootLock = false;
             }
 
-            // ── CLOSE ──
             if (connection === 'close') {
                 clearOpenTimer();
 
@@ -200,7 +201,10 @@ async function startBot() {
             log.warn('Timeout — restart...');
             isConnecting = false;
             bootLock = false;
-            try { sock?.ev?.removeAllListeners(); sock?.ws?.close(); } catch {}
+            try {
+                sock?.ev?.removeAllListeners();
+                sock?.ws?.close();
+            } catch {}
             setTimeout(startBot, 7000);
         }, 180000);
 
