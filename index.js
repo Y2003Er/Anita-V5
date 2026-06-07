@@ -26,7 +26,6 @@ const logger = pino({ level: 'silent' });
 const SESSION_ID   = process.env.SESSION_ID || 'queen_anita_v5';
 const PHONE_NUMBER = process.env.PHONE_NUMBER?.trim();
 
-// ─── Logger ─────────────────────────────────────────
 const log = {
     info:    (msg) => console.log(`  ✦  ${msg}`),
     success: (msg) => console.log(`  ✔  ${msg}`),
@@ -37,7 +36,6 @@ const log = {
     blank:   ()    => console.log(''),
 };
 
-// ─── Banner ─────────────────────────────────────────
 log.blank();
 console.log('  ╔════════════════════════════════════════════╗');
 console.log('  ║       QUEEN_ANITA-V5   ·   RUNTIME         ║');
@@ -46,26 +44,15 @@ console.log('  ║       Session  ·   PostgreSQL (Railway)    ║');
 console.log('  ╚════════════════════════════════════════════╝');
 log.blank();
 
-// ─── Validations ─────────────────────────────────────
-if (!process.env.DATABASE_URL) {
-    log.error('DATABASE_URL haipo — Bot imesimama.');
-    process.exit(1);
-}
-if (!PHONE_NUMBER) {
-    log.error('PHONE_NUMBER haipo — Bot imesimama.');
-    process.exit(1);
-}
-if (!/^\d{10,15}$/.test(PHONE_NUMBER)) {
-    log.error('PHONE_NUMBER si sahihi (mfano: 255753595142)');
-    process.exit(1);
-}
+if (!process.env.DATABASE_URL) { log.error('DATABASE_URL haipo'); process.exit(1); }
+if (!PHONE_NUMBER) { log.error('PHONE_NUMBER haipo'); process.exit(1); }
+if (!/^\d{10,15}$/.test(PHONE_NUMBER)) { log.error('PHONE_NUMBER si sahihi'); process.exit(1); }
 
-// ─── Bot state ───────────────────────────────────────
-let sock           = null;
-let isConnecting   = false;
+let sock = null;
+let isConnecting = false;
 let pairingRequested = false;
-let bootLock       = false;
-let openTimer      = null;
+let bootLock = false;
+let openTimer = null;
 
 function clearOpenTimer() {
     if (openTimer) clearTimeout(openTimer);
@@ -86,17 +73,15 @@ function displayPairingCode(code) {
     log.blank();
 }
 
-// ─── Anzisha bot ─────────────────────────────────────
 async function startBot() {
     if (bootLock || isConnecting) return;
 
-    bootLock     = true;
+    bootLock = true;
     isConnecting = true;
     pairingRequested = false;
     clearOpenTimer();
 
     try {
-        // Load commands before starting
         loadCommands();
         log.success('Commands zimepakiwa.');
 
@@ -112,7 +97,7 @@ async function startBot() {
             version,
             auth: {
                 creds: state.creds,
-                keys:  makeCacheableSignalKeyStore(state.keys, logger),
+                keys: makeCacheableSignalKeyStore(state.keys, logger),
             },
             logger,
             printQRInTerminal: false,
@@ -126,9 +111,9 @@ async function startBot() {
 
         sock.ev.on('connection.update', async (update) => {
             const { connection, lastDisconnect } = update;
-            if (connection) log.state(`Connection  →  ${connection}`);
+            if (connection) log.state(`Connection → ${connection}`);
 
-            // SIMPLE PAIRING FLOW: request after 3 seconds if not registered
+            // SIMPLE PAIRING: after 3 seconds if not registered and connection not closed
             if (!pairingRequested && !state.creds.registered && connection !== 'close') {
                 setTimeout(async () => {
                     if (pairingRequested) return;
@@ -148,21 +133,19 @@ async function startBot() {
                 clearOpenTimer();
                 log.div();
                 log.success('BOT IMEUNGANIKA ✔');
-                log.success('Session imehifadhiwa kwenye PostgreSQL (Railway)');
+                log.success('Session imehifadhiwa kwenye PostgreSQL');
                 log.div();
                 isConnecting = false;
-                bootLock     = false;
+                bootLock = false;
             }
 
             if (connection === 'close') {
                 clearOpenTimer();
                 const code = lastDisconnect?.error?.output?.statusCode;
                 log.div();
-                log.error(`Muunganiko Umevunjika  →  [${code ?? '?'}]`);
-
+                log.error(`Muunganiko Umevunjika → [${code ?? '?'}]`);
                 isConnecting = false;
-                bootLock     = false;
-
+                bootLock = false;
                 if (code === DisconnectReason.loggedOut || code === 401) {
                     log.warn('Session invalid. Inafuta session kutoka DB...');
                     await deleteSession(SESSION_ID);
@@ -178,7 +161,6 @@ async function startBot() {
             }
         });
 
-        // ── Message handlers ──
         sock.ev.on('messages.upsert', async ({ messages, type }) => {
             if (type !== 'notify') return;
             const msg = messages[0];
@@ -214,7 +196,6 @@ async function startBot() {
     }
 }
 
-// ─── ENTRY: Anzisha database kwanza, kisha bot ──────
 (async () => {
     try {
         log.info(`Inaunganika na PostgreSQL...`);
