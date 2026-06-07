@@ -13,20 +13,20 @@ import './config.js';
 import { loadCommands, handleMessage, setupContactListener } from './lib/handler.js';
 import { initializeDatabase, usePostgresAuthState, deleteSession, deleteAllSessions } from './session-db.js';
 
-const logger = pino({ level: 'info' });
+const logger = pino({ level: 'silent' });
 const PHONE_NUMBER = process.env.PHONE_NUMBER?.trim();
 const SESSION_ID = process.env.SESSION_ID || 'queen_anita_v5';
 
 // ========== MUDA WA KUSUBIRI KABLA YA KUOMBA PAIRING CODE (milliseconds) ==========
-const PAIRING_DELAY = 5000;   // sekunde 5 – ongeza ikiwa unahitaji (mfano 8000)
+const PAIRING_DELAY = 5000; // sekunde 5
 
 const CLEAN_SESSIONS = process.env.CLEAN_SESSIONS === 'true';
 
 const log = {
     info:    (msg) => console.log(`  ✦  ${msg}`),
     success: (msg) => console.log(`  ✔  ${msg}`),
-    warn:    (msg) => console.log(`  ⚠  ${msg}`),
-    error:   (msg) => console.log(`  ✖  ${msg}`),
+    warn:    (msg) => console.warn(`  ⚠  ${msg}`),
+    error:   (msg) => console.error(`  ✖  ${msg}`),
     state:   (msg) => console.log(`  ◈  ${msg}`),
     div:     ()    => console.log(`  ${'─'.repeat(46)}`),
     blank:   ()    => console.log(''),
@@ -118,21 +118,30 @@ async function startBot() {
             const { connection, lastDisconnect } = update;
             if (connection) log.state(`Connection  →  ${connection}`);
 
-            // Angalia kama tayari imeshaingia (v7 inaweza kuwa na 'me' au 'account')
-            const isRegistered = !!(state.creds?.me || state.creds?.account);
-            if (!pairingRequested && !isRegistered && connection === 'connecting') {
-                pairingRequested = true;
-                log.info(`Subiri sekunde ${PAIRING_DELAY/1000} kabla ya kuomba pairing code...`);
-                setTimeout(async () => {
-                    try {
-                        console.log(`📱 Inaomba pairing code kwa: ${PHONE_NUMBER}`);
-                        const code = await sock.requestPairingCode(PHONE_NUMBER);
-                        displayPairingCode(code);
-                    } catch (err) {
-                        console.error('❌ Pairing code imeshindwa:', err.message);
-                        pairingRequested = false;
-                    }
-                }, PAIRING_DELAY);
+            // ✅ Live check – inasoma state.creds kwa wakati halisi
+            if (!pairingRequested && connection === 'connecting') {
+                const isRegistered = !!(state.creds?.me || state.creds?.account);
+                if (!isRegistered) {
+                    pairingRequested = true;
+                    log.info(`Subiri sekunde ${PAIRING_DELAY / 1000} kabla ya kuomba pairing code...`);
+                    setTimeout(async () => {
+                        try {
+                            // ✅ Double-check tena baada ya delay – pengine imeshaingia
+                            if (state.creds?.me || state.creds?.account) {
+                                log.success('Session imeshaingia kabla ya pairing — skip.');
+                                return;
+                            }
+                            log.info(`📱 Inaomba pairing code kwa: ${PHONE_NUMBER}`);
+                            const code = await sock.requestPairingCode(PHONE_NUMBER);
+                            displayPairingCode(code);
+                        } catch (err) {
+                            log.error(`Pairing code imeshindwa: ${err.message}`);
+                            pairingRequested = false;
+                        }
+                    }, PAIRING_DELAY);
+                } else {
+                    log.success('Session ipo — haihitaji pairing.');
+                }
             }
 
             if (connection === 'open') {
@@ -172,11 +181,15 @@ async function startBot() {
             const msg = messages[0];
             if (!msg.message) return;
             if (msg.key.fromMe) return;
-            const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text || '[non-text message]';
+            const text =
+                msg.message?.conversation ||
+                msg.message?.extendedTextMessage?.text ||
+                '[non-text message]';
             console.log(`📩 Ujumbe kutoka ${msg.key.remoteJid}: ${text}`);
             await handleMessage(sock, msg);
         });
 
+        // ✅ Timeout ya dakika 3 – ikiwa haijaunganika restart
         openTimer = setTimeout(() => {
             log.warn('Timeout — restart...');
             isConnecting = false;
@@ -185,6 +198,7 @@ async function startBot() {
             setTimeout(startBot, 7000);
         }, 180000);
 
+        // ✅ Log hali ya session baada ya socket kuanzishwa
         if (state.creds?.me || state.creds?.account) {
             log.success('Session ipo PostgreSQL — Inaunganika...');
         } else {
