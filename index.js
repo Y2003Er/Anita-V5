@@ -19,7 +19,8 @@ const {
 
 require('./config');
 
-const { loadCommands, handleMessage, handleAntiDelete, cacheMessage, setupContactListener } = require('./lib/handler');
+// Import only what exists in your simple handler
+const { loadCommands, handleMessage, handleAntiDelete, cacheMessage } = require('./lib/handler');
 
 const logger = pino({ level: 'silent' });
 
@@ -44,15 +45,24 @@ console.log('  ║       Session  ·   PostgreSQL (Railway)    ║');
 console.log('  ╚════════════════════════════════════════════╝');
 log.blank();
 
-if (!process.env.DATABASE_URL) { log.error('DATABASE_URL haipo'); process.exit(1); }
-if (!PHONE_NUMBER) { log.error('PHONE_NUMBER haipo'); process.exit(1); }
-if (!/^\d{10,15}$/.test(PHONE_NUMBER)) { log.error('PHONE_NUMBER si sahihi'); process.exit(1); }
+if (!process.env.DATABASE_URL) {
+    log.error('DATABASE_URL haipo — Bot imesimama.');
+    process.exit(1);
+}
+if (!PHONE_NUMBER) {
+    log.error('PHONE_NUMBER haipo — Bot imesimama.');
+    process.exit(1);
+}
+if (!/^\d{10,15}$/.test(PHONE_NUMBER)) {
+    log.error('PHONE_NUMBER si sahihi (mfano: 255753595142)');
+    process.exit(1);
+}
 
-let sock = null;
-let isConnecting = false;
+let sock           = null;
+let isConnecting   = false;
 let pairingRequested = false;
-let bootLock = false;
-let openTimer = null;
+let bootLock       = false;
+let openTimer      = null;
 
 function clearOpenTimer() {
     if (openTimer) clearTimeout(openTimer);
@@ -76,7 +86,7 @@ function displayPairingCode(code) {
 async function startBot() {
     if (bootLock || isConnecting) return;
 
-    bootLock = true;
+    bootLock     = true;
     isConnecting = true;
     pairingRequested = false;
     clearOpenTimer();
@@ -97,7 +107,7 @@ async function startBot() {
             version,
             auth: {
                 creds: state.creds,
-                keys: makeCacheableSignalKeyStore(state.keys, logger),
+                keys:  makeCacheableSignalKeyStore(state.keys, logger),
             },
             logger,
             printQRInTerminal: false,
@@ -107,13 +117,12 @@ async function startBot() {
         });
 
         sock.ev.on('creds.update', saveCreds);
-        setupContactListener(sock);
 
         sock.ev.on('connection.update', async (update) => {
             const { connection, lastDisconnect } = update;
-            if (connection) log.state(`Connection → ${connection}`);
+            if (connection) log.state(`Connection  →  ${connection}`);
 
-            // SIMPLE PAIRING: after 3 seconds if not registered and connection not closed
+            // SIMPLE PAIRING FLOW: request after 3 seconds if not registered
             if (!pairingRequested && !state.creds.registered && connection !== 'close') {
                 setTimeout(async () => {
                     if (pairingRequested) return;
@@ -133,19 +142,21 @@ async function startBot() {
                 clearOpenTimer();
                 log.div();
                 log.success('BOT IMEUNGANIKA ✔');
-                log.success('Session imehifadhiwa kwenye PostgreSQL');
+                log.success('Session imehifadhiwa kwenye PostgreSQL (Railway)');
                 log.div();
                 isConnecting = false;
-                bootLock = false;
+                bootLock     = false;
             }
 
             if (connection === 'close') {
                 clearOpenTimer();
                 const code = lastDisconnect?.error?.output?.statusCode;
                 log.div();
-                log.error(`Muunganiko Umevunjika → [${code ?? '?'}]`);
+                log.error(`Muunganiko Umevunjika  →  [${code ?? '?'}]`);
+
                 isConnecting = false;
-                bootLock = false;
+                bootLock     = false;
+
                 if (code === DisconnectReason.loggedOut || code === 401) {
                     log.warn('Session invalid. Inafuta session kutoka DB...');
                     await deleteSession(SESSION_ID);
@@ -161,6 +172,7 @@ async function startBot() {
             }
         });
 
+        // ── Message handlers ──
         sock.ev.on('messages.upsert', async ({ messages, type }) => {
             if (type !== 'notify') return;
             const msg = messages[0];
@@ -196,6 +208,7 @@ async function startBot() {
     }
 }
 
+// ─── ENTRY: Anzisha database kwanza, kisha bot ──────
 (async () => {
     try {
         log.info(`Inaunganika na PostgreSQL...`);
