@@ -1,3 +1,4 @@
+// session-db.js – inahifadhi state nzima kwenye safu ya 'state' (JSONB)
 import { Pool } from 'pg';
 import { initAuthCreds, makeCacheableSignalKeyStore } from '@whiskeysockets/baileys';
 
@@ -20,6 +21,7 @@ function getPool() {
 export async function initializeDatabase() {
     const client = await getPool().connect();
     try {
+        // Hakikisha table ina safu 'state' (JSONB)
         await client.query(`
             CREATE TABLE IF NOT EXISTS wa_sessions (
                 session_id TEXT PRIMARY KEY,
@@ -27,10 +29,10 @@ export async function initializeDatabase() {
                 updated_at TIMESTAMPTZ DEFAULT NOW()
             )
         `);
-        console.log('[session-db] Table "wa_sessions" ready (JSONB).');
+        console.log('[session-db] Table "wa_sessions" ready (state JSONB).');
         return true;
     } catch (err) {
-        console.error('[session-db] Table creation failed:', err.message);
+        console.error('[session-db] Table error:', err.message);
         return false;
     } finally {
         client.release();
@@ -42,7 +44,7 @@ async function loadState(sessionId) {
     try {
         const res = await client.query(`SELECT state FROM wa_sessions WHERE session_id = $1`, [sessionId]);
         if (res.rows.length === 0) return null;
-        return res.rows[0].state;
+        return res.rows[0].state; // state ni object { creds, keys }
     } catch (err) {
         console.error('[session-db] Load error:', err.message);
         return null;
@@ -61,7 +63,7 @@ async function saveState(sessionId, state) {
              SET state = EXCLUDED.state, updated_at = NOW()`,
             [sessionId, state]
         );
-        console.log('[session-db] State saved');
+        console.log('[session-db] State saved.');
     } catch (err) {
         console.error('[session-db] Save error:', err.message);
     } finally {
@@ -85,7 +87,7 @@ export async function deleteAllSessions() {
     const client = await getPool().connect();
     try {
         const result = await client.query(`DELETE FROM wa_sessions`);
-        console.log(`[session-db] Deleted ${result.rowCount} session(s)`);
+        console.log(`[session-db] Deleted ${result.rowCount} session(s).`);
     } catch (err) {
         console.error('[session-db] Delete all error:', err.message);
     } finally {
@@ -93,12 +95,12 @@ export async function deleteAllSessions() {
     }
 }
 
+// Main auth state for Baileys v7
 export async function usePostgresAuthState(sessionId) {
-    let saved = await loadState(sessionId);
-    let creds = saved?.creds || initAuthCreds();
-    let keysStore = saved?.keys || {};
+    let fullState = await loadState(sessionId);
+    let creds = fullState?.creds || initAuthCreds();
+    let keysStore = fullState?.keys || {};
 
-    // Basic key-value store
     const keyStore = {
         get: async (type, ids) => {
             const result = {};
@@ -135,7 +137,6 @@ export async function usePostgresAuthState(sessionId) {
     const keys = makeCacheableSignalKeyStore(keyStore, null);
 
     const saveCreds = async () => {
-        // creds object is mutated by Baileys, so we save it as is
         await saveState(sessionId, { creds, keys: keysStore });
         console.log('[session-db] Creds updated');
     };
