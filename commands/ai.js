@@ -174,6 +174,7 @@ export const description = 'AI Assistant + Photo Editor (.ai, .bot, .photo)';
 
 export async function execute(sock, msg, args) {
     const from = msg.key.remoteJid;
+    console.log('[ai] GROQ:', !!process.env.GROQ_API_KEY, '| GEMINI:', !!process.env.GEMINI_API_KEY);
     const sender = msg.key.participant || from;
     const fullText = (msg.message?.conversation ||
                       msg.message?.extendedTextMessage?.text ||
