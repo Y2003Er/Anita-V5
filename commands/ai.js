@@ -52,8 +52,8 @@ async function callGroq(messages) {
         body: JSON.stringify({
             model: 'llama-3.1-8b-instant',
             messages,
-            temperature: 0.5,
-            max_tokens: 700,
+            temperature: 0.7,
+            max_tokens: 2048,
         })
     });
     if (!res.ok) throw new Error(`Groq failed: ${res.status}`);
@@ -62,11 +62,9 @@ async function callGroq(messages) {
 }
 
 async function callGemini(messages) {
-    // ✅ Tenganisha system prompt na history
     const systemMsg = messages.find(m => m.role === 'system')?.content || '';
     const turns = messages.filter(m => m.role !== 'system');
 
-    // ✅ Format sahihi ya Gemini — kila turn ni object yake, assistant → model
     const contents = turns.map(m => ({
         role: m.role === 'assistant' ? 'model' : 'user',
         parts: [{ text: m.content }]
@@ -81,8 +79,8 @@ async function callGemini(messages) {
                 system_instruction: { parts: [{ text: systemMsg }] },
                 contents,
                 generationConfig: {
-                    temperature: 0.5,
-                    maxOutputTokens: 700,
+                    temperature: 0.7,
+                    maxOutputTokens: 2048,
                 }
             })
         }
@@ -112,10 +110,14 @@ async function aiRouter(messages) {
 // =====================
 // 🤖 SYSTEM PROMPT
 // =====================
-const SYSTEM = `Wewe ni AI Assistant wa *26 Tech Solution*, ulioundwa na *Yuzzo*.
-Jibu kwa Kiswahili au English kulingana na mtumiaji.
-Majibu yawe mafupi, smart na ya kusaidia.
-Usitumie markdown nyingi — tumia bold (*neno*) tu pale inapohitajika.`;
+const SYSTEM = `Wewe ni AI assistant wa hali ya juu, ulioundwa na *26 Tech Solution* (Yuzzo).
+Fikiria kwa kina kabla ya kujibu — toa jibu bora, sahihi na la kina kulingana na swali.
+Kama swali ni rahisi, jibu kwa ufupi na moja kwa moja.
+Kama swali ni gumu, linahitaji maelezo, au ni la kitaalamu — toa jibu refu, structured na detailed.
+Jibu kwa mtindo wa Claude, ChatGPT au Grok — kwa akili, ubunifu na uhalisia.
+Jibu kwa lugha ile ile mtumiaji aliyotumia (Kiswahili au English).
+Tumia formatting pale inapoboresha ufahamu: *bold* kwa vitu muhimu, numbering kwa hatua.
+Usiseme "kama AI" au "kama mfano wa lugha" — jibu tu kama mshauri na rafiki mwenye akili.`;
 
 // =====================
 // 🖼️ PHOTO EDITOR
@@ -148,10 +150,10 @@ async function handlePhoto(sock, msg, from, commandText) {
         for await (const chunk of stream) buffer = Buffer.concat([buffer, chunk]);
 
         let processed;
-        if (type === 'blur')         processed = await sharp(buffer).blur(10).toBuffer();
-        else if (type === 'gray')    processed = await sharp(buffer).grayscale().toBuffer();
-        else if (type === 'rotate')  processed = await sharp(buffer).rotate(90).toBuffer();
-        else                         processed = await sharp(buffer).resize(900).sharpen().toBuffer();
+        if (type === 'blur')        processed = await sharp(buffer).blur(10).toBuffer();
+        else if (type === 'gray')   processed = await sharp(buffer).grayscale().toBuffer();
+        else if (type === 'rotate') processed = await sharp(buffer).rotate(90).toBuffer();
+        else                        processed = await sharp(buffer).resize(900).sharpen().toBuffer();
 
         await sock.sendMessage(from, {
             image: processed,
