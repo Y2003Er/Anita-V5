@@ -160,11 +160,10 @@ async function startBot() {
                 isConnecting = false;
                 bootLock = false;
 
-                // ✅ 515 = Baileys inataka ku-reconnect yenyewe baada ya pairing
-                // Usirestart — subiri Baileys ifanye kazi yake
                 if (code === 515) {
-                    log.info('Pairing restart (515) — Baileys inaunganika upya yenyewe...');
-                    return; // ← MUHIMU: usifanye startBot
+                    log.info('Pairing restart (515) — restarting in 2s...');
+                    setTimeout(startBot, 2000);
+                    return;
                 }
 
                 log.div();
