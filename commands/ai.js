@@ -32,7 +32,7 @@ async function getHistory(userId) {
 async function addHistory(userId, msg) {
     const history = await getHistory(userId);
     history.push(msg);
-    const trimmed = history.slice(-20); // keep last 20
+    const trimmed = history.slice(-20);
     await pool.query(`
         INSERT INTO ai_memory (user_id, history) VALUES ($1, $2)
         ON CONFLICT (user_id) DO UPDATE SET history = $2
@@ -62,10 +62,15 @@ async function callGroq(messages) {
 }
 
 async function callGemini(messages) {
-    const prompt = messages
-        .filter(m => m.role !== 'system')
-        .map(m => `${m.role === 'user' ? 'User' : 'Bot'}: ${m.content}`)
-        .join('\n');
+    // ✅ Tenganisha system prompt na history
+    const systemMsg = messages.find(m => m.role === 'system')?.content || '';
+    const turns = messages.filter(m => m.role !== 'system');
+
+    // ✅ Format sahihi ya Gemini — kila turn ni object yake, assistant → model
+    const contents = turns.map(m => ({
+        role: m.role === 'assistant' ? 'model' : 'user',
+        parts: [{ text: m.content }]
+    }));
 
     const res = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
@@ -73,11 +78,21 @@ async function callGemini(messages) {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                contents: [{ parts: [{ text: prompt }] }]
+                system_instruction: { parts: [{ text: systemMsg }] },
+                contents,
+                generationConfig: {
+                    temperature: 0.5,
+                    maxOutputTokens: 700,
+                }
             })
         }
     );
-    if (!res.ok) throw new Error(`Gemini failed: ${res.status}`);
+
+    if (!res.ok) {
+        const err = await res.json();
+        throw new Error(`Gemini failed: ${res.status} — ${err.error?.message || ''}`);
+    }
+
     const data = await res.json();
     return data.candidates?.[0]?.content?.parts?.[0]?.text;
 }
@@ -108,7 +123,6 @@ Usitumie markdown nyingi — tumia bold (*neno*) tu pale inapohitajika.`;
 async function handlePhoto(sock, msg, from, commandText) {
     let sharp;
     try {
-        // Dynamic import for ES module
         sharp = await import('sharp');
         sharp = sharp.default;
     } catch {
@@ -153,22 +167,21 @@ async function handlePhoto(sock, msg, from, commandText) {
 }
 
 // =====================
-// 🚀 MAIN COMMAND (ES module export)
+// 🚀 MAIN COMMAND
 // =====================
 export const name = 'ai';
 export const description = 'AI Assistant + Photo Editor (.ai, .bot, .photo)';
 
 export async function execute(sock, msg, args) {
-    // Extract info from message
-    const from = msg.key.remoteJid;               // chat ID (group or private)
-    const sender = msg.key.participant || from;   // actual sender (LID)
+    const from = msg.key.remoteJid;
+    const sender = msg.key.participant || from;
     const fullText = (msg.message?.conversation ||
                       msg.message?.extendedTextMessage?.text ||
                       '').trim();
 
     if (!fullText) return false;
 
-    // 🖼️ Photo editor command
+    // 🖼️ Photo editor
     if (fullText.startsWith('.photo')) {
         return await handlePhoto(sock, msg, from, fullText);
     }
@@ -185,10 +198,8 @@ export async function execute(sock, msg, args) {
         return true;
     }
 
-    // Send typing indicator
     await sock.sendPresenceUpdate('composing', from).catch(() => {});
 
-    // Load history for this user
     let history = [];
     try { history = await getHistory(sender); } catch (e) {}
 
@@ -202,7 +213,6 @@ export async function execute(sock, msg, args) {
         const reply = await aiRouter(messages);
         if (!reply) throw new Error('Jibu tupu');
 
-        // Save to memory (async, don't await to avoid delay)
         addHistory(sender, { role: 'user', content: query }).catch(console.error);
         addHistory(sender, { role: 'assistant', content: reply }).catch(console.error);
 
