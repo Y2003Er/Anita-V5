@@ -1,9 +1,8 @@
-// session-db.js – Fully compatible with Baileys v7 (^7.0.0-rc13)
-// Fixes decryption errors by properly deserializing all key types
+// session-db.js – Persistent session storage for Baileys v7 using BYTEA
 'use strict';
 
 const { Pool } = require('pg');
-const { initAuthCreds, proto } = require('@whiskeysockets/baileys');
+const { initAuthCreds } = require('@whiskeysockets/baileys');
 
 let pool = null;
 
@@ -21,59 +20,19 @@ function getPool() {
     return pool;
 }
 
-// ========== Robust Serialization (handles Buffers & Proto objects) ==========
-function toSerializable(obj) {
-    if (obj === null || obj === undefined) return obj;
-    if (Buffer.isBuffer(obj)) {
-        return { __type: 'Buffer', data: obj.toString('base64') };
-    }
-    if (typeof obj.toJSON === 'function') {
-        return toSerializable(obj.toJSON());
-    }
-    if (Array.isArray(obj)) {
-        return obj.map(v => toSerializable(v));
-    }
-    if (typeof obj === 'object') {
-        const copy = {};
-        for (const [k, v] of Object.entries(obj)) {
-            copy[k] = toSerializable(v);
-        }
-        return copy;
-    }
-    return obj;
-}
-
-function fromSerializable(obj) {
-    if (obj === null || obj === undefined) return obj;
-    if (typeof obj === 'object') {
-        if (obj.__type === 'Buffer' && typeof obj.data === 'string') {
-            return Buffer.from(obj.data, 'base64');
-        }
-        if (Array.isArray(obj)) {
-            return obj.map(v => fromSerializable(v));
-        }
-        const copy = {};
-        for (const [k, v] of Object.entries(obj)) {
-            copy[k] = fromSerializable(v);
-        }
-        return copy;
-    }
-    return obj;
-}
-
-// ========== Initialize table ==========
 async function initializeDatabase() {
     const client = await getPool().connect();
     try {
+        // Table with BYTEA columns for raw binary storage
         await client.query(`
-            CREATE TABLE IF NOT EXISTS wa_sessions (
+            CREATE TABLE IF NOT EXISTS wa_sessions_bin (
                 session_id TEXT PRIMARY KEY,
-                creds JSONB NOT NULL,
-                keys JSONB NOT NULL,
+                creds BYTEA NOT NULL,
+                keys BYTEA NOT NULL,
                 updated_at TIMESTAMPTZ DEFAULT NOW()
             )
         `);
-        console.log('[session-db] Table "wa_sessions" ready.');
+        console.log('[session-db] Table "wa_sessions_bin" ready (BYTEA).');
         return true;
     } catch (err) {
         console.error('[session-db] Table creation failed:', err.message);
@@ -83,18 +42,22 @@ async function initializeDatabase() {
     }
 }
 
-// ========== Load session ==========
 async function loadSession(sessionId) {
     const client = await getPool().connect();
     try {
         const res = await client.query(
-            `SELECT creds, keys FROM wa_sessions WHERE session_id = $1`,
+            `SELECT creds, keys FROM wa_sessions_bin WHERE session_id = $1`,
             [sessionId]
         );
         if (res.rows.length === 0) return null;
-        const creds = fromSerializable(res.rows[0].creds);
-        const keys = fromSerializable(res.rows[0].keys);
-        return { creds, keys };
+        // creds and keys are returned as Buffers (BYTEA)
+        const creds = res.rows[0].creds;
+        const keys = res.rows[0].keys;
+        // Baileys expects objects – parse the Buffers (they contain JSON)
+        return {
+            creds: JSON.parse(creds.toString('utf8')),
+            keys: JSON.parse(keys.toString('utf8'))
+        };
     } catch (err) {
         console.error('[session-db] Load error:', err.message);
         return null;
@@ -103,20 +66,20 @@ async function loadSession(sessionId) {
     }
 }
 
-// ========== Save session ==========
 async function saveSession(sessionId, creds, keys) {
     const client = await getPool().connect();
     try {
-        const credsJson = toSerializable(creds);
-        const keysJson = toSerializable(keys);
+        // Convert objects to JSON strings, then to Buffers
+        const credsBuf = Buffer.from(JSON.stringify(creds), 'utf8');
+        const keysBuf = Buffer.from(JSON.stringify(keys), 'utf8');
         await client.query(
-            `INSERT INTO wa_sessions (session_id, creds, keys, updated_at)
-             VALUES ($1, $2::jsonb, $3::jsonb, NOW())
+            `INSERT INTO wa_sessions_bin (session_id, creds, keys, updated_at)
+             VALUES ($1, $2, $3, NOW())
              ON CONFLICT (session_id) DO UPDATE
              SET creds = EXCLUDED.creds, keys = EXCLUDED.keys, updated_at = NOW()`,
-            [sessionId, JSON.stringify(credsJson), JSON.stringify(keysJson)]
+            [sessionId, credsBuf, keysBuf]
         );
-        console.log('[session-db] Session saved/updated');
+        console.log('[session-db] Session saved/updated (binary)');
     } catch (err) {
         console.error('[session-db] Save error:', err.message);
     } finally {
@@ -124,11 +87,10 @@ async function saveSession(sessionId, creds, keys) {
     }
 }
 
-// ========== Delete session ==========
 async function deleteSession(sessionId) {
     const client = await getPool().connect();
     try {
-        await client.query(`DELETE FROM wa_sessions WHERE session_id = $1`, [sessionId]);
+        await client.query(`DELETE FROM wa_sessions_bin WHERE session_id = $1`, [sessionId]);
         console.log('[session-db] Session deleted');
     } catch (err) {
         console.error('[session-db] Delete error:', err.message);
@@ -137,39 +99,20 @@ async function deleteSession(sessionId) {
     }
 }
 
-// ========== Helper to deserialize app-state-sync-key (v7) ==========
-function deserializeAppStateSyncKey(data) {
-    // data should already be a plain object (after fromSerializable)
-    if (proto.Message?.AppStateSyncKeyData?.fromObject) {
-        return proto.Message.AppStateSyncKeyData.fromObject(data);
-    }
-    if (proto.AppStateSyncKeyData?.fromObject) {
-        return proto.AppStateSyncKeyData.fromObject(data);
-    }
-    return data;
-}
-
-// ========== Main auth state for Baileys v7 ==========
+// Main auth state for Baileys v7
 async function usePostgresAuthState(sessionId) {
     let session = await loadSession(sessionId);
     let creds = session ? session.creds : initAuthCreds();
     let keysStore = session ? session.keys : {};
 
+    // The keys interface as expected by Baileys
     const keys = {
         get: async (type, ids) => {
             const result = {};
             for (const id of ids) {
                 const key = `${type}--${id}`;
-                const stored = keysStore[key];
-                if (stored !== undefined) {
-                    // ✅ CRITICAL FIX: Deserialize the stored value (convert placeholders back to Buffers)
-                    let value = fromSerializable(stored);
-                    if (type === 'app-state-sync-key') {
-                        // Convert plain object to proto object expected by Baileys
-                        value = deserializeAppStateSyncKey(value);
-                    }
-                    result[id] = value;
-                }
+                const val = keysStore[key];
+                if (val !== undefined) result[id] = val;
             }
             return result;
         },
@@ -185,9 +128,7 @@ async function usePostgresAuthState(sessionId) {
                             changed = true;
                         }
                     } else {
-                        // Serialize to JSON‑compatible format (convert Buffers to placeholders)
-                        let toStore = toSerializable(value);
-                        keysStore[key] = toStore;
+                        keysStore[key] = value;
                         changed = true;
                     }
                 }
