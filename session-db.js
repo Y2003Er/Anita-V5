@@ -24,6 +24,23 @@ function getPool() {
 export async function initializeDatabase() {
     const client = await getPool().connect();
     try {
+        // ✅ Migration: kama table ipo lakini haina column 'state', drop na uunde upya
+        await client.query(`
+            DO $$
+            BEGIN
+                IF EXISTS (
+                    SELECT 1 FROM information_schema.tables
+                    WHERE table_name = 'wa_sessions'
+                ) AND NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'wa_sessions' AND column_name = 'state'
+                ) THEN
+                    DROP TABLE wa_sessions;
+                    RAISE NOTICE 'wa_sessions (schema ya zamani) imefutwa — itaundwa upya.';
+                END IF;
+            END $$;
+        `);
+
         await client.query(`
             CREATE TABLE IF NOT EXISTS wa_sessions (
                 session_id TEXT PRIMARY KEY,
