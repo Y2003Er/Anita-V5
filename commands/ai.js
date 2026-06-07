@@ -1,7 +1,7 @@
-'use strict';
-require('dotenv').config();
-const { Pool } = require('pg');
-const { downloadContentFromMessage } = require('@whiskeysockets/baileys');
+import dotenv from 'dotenv';
+dotenv.config();
+import { Pool } from 'pg';
+import { downloadContentFromMessage } from '@whiskeysockets/baileys';
 
 const GROQ_API_KEY   = process.env.GROQ_API_KEY;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
@@ -107,7 +107,11 @@ Usitumie markdown nyingi — tumia bold (*neno*) tu pale inapohitajika.`;
 // =====================
 async function handlePhoto(sock, msg, from, commandText) {
     let sharp;
-    try { sharp = require('sharp'); } catch {
+    try {
+        // Dynamic import for ES module
+        sharp = await import('sharp');
+        sharp = sharp.default;
+    } catch {
         await sock.sendMessage(from, { text: '❌ sharp haipo — run: npm install sharp' }, { quoted: msg });
         return true;
     }
@@ -149,71 +153,69 @@ async function handlePhoto(sock, msg, from, commandText) {
 }
 
 // =====================
-// 🚀 MAIN COMMAND (handler compatible)
+// 🚀 MAIN COMMAND (ES module export)
 // =====================
-module.exports = {
-    name: 'ai',
-    description: 'AI Assistant + Photo Editor (.ai, .bot, .photo)',
+export const name = 'ai';
+export const description = 'AI Assistant + Photo Editor (.ai, .bot, .photo)';
 
-    async execute(sock, msg, args) {
-        // Extract info from message
-        const from = msg.key.remoteJid;               // chat ID (group or private)
-        const sender = msg.key.participant || from;   // actual sender (LID)
-        const fullText = (msg.message?.conversation ||
-                          msg.message?.extendedTextMessage?.text ||
-                          '').trim();
-        
-        if (!fullText) return false;
+export async function execute(sock, msg, args) {
+    // Extract info from message
+    const from = msg.key.remoteJid;               // chat ID (group or private)
+    const sender = msg.key.participant || from;   // actual sender (LID)
+    const fullText = (msg.message?.conversation ||
+                      msg.message?.extendedTextMessage?.text ||
+                      '').trim();
 
-        // 🖼️ Photo editor command
-        if (fullText.startsWith('.photo')) {
-            return await handlePhoto(sock, msg, from, fullText);
-        }
+    if (!fullText) return false;
 
-        // 🤖 AI command
-        if (!fullText.startsWith('.ai') && !fullText.startsWith('.bot')) return false;
+    // 🖼️ Photo editor command
+    if (fullText.startsWith('.photo')) {
+        return await handlePhoto(sock, msg, from, fullText);
+    }
 
-        const query = fullText.replace(/^\.(ai|bot)\s*/i, '').trim();
+    // 🤖 AI command
+    if (!fullText.startsWith('.ai') && !fullText.startsWith('.bot')) return false;
 
-        if (!query) {
-            await sock.sendMessage(from, {
-                text: '💬 Tumia: .ai swali lako\nMfano: .ai habari za leo Tanzania?'
-            }, { quoted: msg });
-            return true;
-        }
+    const query = fullText.replace(/^\.(ai|bot)\s*/i, '').trim();
 
-        // Send typing indicator
-        await sock.sendPresenceUpdate('composing', from).catch(() => {});
-
-        // Load history for this user
-        let history = [];
-        try { history = await getHistory(sender); } catch (e) {}
-
-        const messages = [
-            { role: 'system', content: SYSTEM },
-            ...history,
-            { role: 'user', content: query }
-        ];
-
-        try {
-            const reply = await aiRouter(messages);
-            if (!reply) throw new Error('Jibu tupu');
-
-            // Save to memory (async, don't await to avoid delay)
-            addHistory(sender, { role: 'user', content: query }).catch(console.error);
-            addHistory(sender, { role: 'assistant', content: reply }).catch(console.error);
-
-            await sock.sendMessage(from, {
-                text: `🤖 *26 Tech AI*\n\n${reply}`
-            }, { quoted: msg });
-
-        } catch (err) {
-            console.error('AI error:', err.message);
-            await sock.sendMessage(from, {
-                text: `❌ AI imeshindwa: ${err.message}`
-            }, { quoted: msg });
-        }
-
+    if (!query) {
+        await sock.sendMessage(from, {
+            text: '💬 Tumia: .ai swali lako\nMfano: .ai habari za leo Tanzania?'
+        }, { quoted: msg });
         return true;
     }
-};
+
+    // Send typing indicator
+    await sock.sendPresenceUpdate('composing', from).catch(() => {});
+
+    // Load history for this user
+    let history = [];
+    try { history = await getHistory(sender); } catch (e) {}
+
+    const messages = [
+        { role: 'system', content: SYSTEM },
+        ...history,
+        { role: 'user', content: query }
+    ];
+
+    try {
+        const reply = await aiRouter(messages);
+        if (!reply) throw new Error('Jibu tupu');
+
+        // Save to memory (async, don't await to avoid delay)
+        addHistory(sender, { role: 'user', content: query }).catch(console.error);
+        addHistory(sender, { role: 'assistant', content: reply }).catch(console.error);
+
+        await sock.sendMessage(from, {
+            text: `🤖 *26 Tech AI*\n\n${reply}`
+        }, { quoted: msg });
+
+    } catch (err) {
+        console.error('AI error:', err.message);
+        await sock.sendMessage(from, {
+            text: `❌ AI imeshindwa: ${err.message}`
+        }, { quoted: msg });
+    }
+
+    return true;
+}
