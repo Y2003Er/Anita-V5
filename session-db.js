@@ -1,5 +1,5 @@
 // session-db.js – Fully compatible with Baileys v7 (^7.0.0-rc13)
-// Fixes decryption errors by properly storing all key types (including sender-key)
+// Fixes decryption errors by properly deserializing all key types
 'use strict';
 
 const { Pool } = require('pg');
@@ -27,7 +27,6 @@ function toSerializable(obj) {
     if (Buffer.isBuffer(obj)) {
         return { __type: 'Buffer', data: obj.toString('base64') };
     }
-    // Handle proto objects that have toJSON method
     if (typeof obj.toJSON === 'function') {
         return toSerializable(obj.toJSON());
     }
@@ -140,13 +139,13 @@ async function deleteSession(sessionId) {
 
 // ========== Helper to deserialize app-state-sync-key (v7) ==========
 function deserializeAppStateSyncKey(data) {
+    // data should already be a plain object (after fromSerializable)
     if (proto.Message?.AppStateSyncKeyData?.fromObject) {
         return proto.Message.AppStateSyncKeyData.fromObject(data);
     }
     if (proto.AppStateSyncKeyData?.fromObject) {
         return proto.AppStateSyncKeyData.fromObject(data);
     }
-    // Last resort: assume it's already a proper object
     return data;
 }
 
@@ -161,14 +160,15 @@ async function usePostgresAuthState(sessionId) {
             const result = {};
             for (const id of ids) {
                 const key = `${type}--${id}`;
-                const val = keysStore[key];
-                if (val !== undefined) {
+                const stored = keysStore[key];
+                if (stored !== undefined) {
+                    // ✅ CRITICAL FIX: Deserialize the stored value (convert placeholders back to Buffers)
+                    let value = fromSerializable(stored);
                     if (type === 'app-state-sync-key') {
-                        result[id] = deserializeAppStateSyncKey(val);
-                    } else {
-                        // For all other types (pre-key, session, sender-key, etc.)
-                        result[id] = val;
+                        // Convert plain object to proto object expected by Baileys
+                        value = deserializeAppStateSyncKey(value);
                     }
+                    result[id] = value;
                 }
             }
             return result;
@@ -185,14 +185,8 @@ async function usePostgresAuthState(sessionId) {
                             changed = true;
                         }
                     } else {
-                        // Convert any proto object to plain JSON-serializable form
-                        let toStore = value;
-                        if (value && typeof value.toJSON === 'function') {
-                            toStore = value.toJSON();
-                        } else if (value && typeof value === 'object') {
-                            // Already plain object – but we need to ensure nested Buffers are handled
-                            toStore = toSerializable(value);
-                        }
+                        // Serialize to JSON‑compatible format (convert Buffers to placeholders)
+                        let toStore = toSerializable(value);
                         keysStore[key] = toStore;
                         changed = true;
                     }
