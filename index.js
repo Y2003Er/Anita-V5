@@ -109,12 +109,16 @@ async function startBot() {
         // v7 requires msgRetryCounterCache
         const msgRetryCounterCache = new NodeCache();
 
+        // 🔧 FIX 1: Properly destroy old socket with a delay
         if (sock) {
             try {
                 sock.ev.removeAllListeners();
-                sock.ws?.close();
-            } catch {}
+                await sock.ws?.close();
+                sock.end?.(new Error('Restarting'));
+            } catch (e) {}
             sock = null;
+            // Wait for server to recognise the closure
+            await new Promise(resolve => setTimeout(resolve, 2000));
         }
 
         sock = makeWASocket({
@@ -128,7 +132,6 @@ async function startBot() {
             browser: Browsers.ubuntu('Chrome'),  // v7 style
             connectTimeoutMs: 120000,
             keepAliveIntervalMs: 30000,
-            // ✅ REMOVED: shouldSyncHistoryMessage: () => false,   (caused LID mapping failure)
             defaultQueryTimeoutMs: undefined,
             generateHighQualityLinkPreview: false,
             patchMessageBeforeSending: (msg) => msg,
@@ -181,11 +184,16 @@ async function startBot() {
                 isConnecting = false;
                 bootLock = false;
 
-                if (code === DisconnectReason.loggedOut || code === 401) {
+                // 🔧 FIX 2: Different delays for different error codes
+                if (code === 440) {
+                    log.warn('Connection replaced (440) – waiting 15s before restart');
+                    setTimeout(startBot, 15000);
+                } else if (code === DisconnectReason.loggedOut || code === 401) {
                     log.warn('Session invalid. Inafuta session...');
                     await deleteSession(SESSION_ID);
                     setTimeout(startBot, 10000);
                 } else {
+                    log.warn('Unknown disconnect – restarting in 7s');
                     setTimeout(startBot, 7000);
                 }
             }
