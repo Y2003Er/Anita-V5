@@ -21,15 +21,23 @@ function getPool() {
     return pool;
 }
 
-// ✅ Rejesha Buffer kutoka JSONB — PostgreSQL inabadilisha Buffer kuwa { type: 'Buffer', data: [...] }
+// ✅ Rejesha Buffer kutoka Base64 string au { type:'Buffer', data:[...] }
+// PostgreSQL JSONB inabadilisha Buffer — lazima irudishwe kabla ya kutumika na Baileys
 function reviveBuffers(obj) {
     if (obj == null) return obj;
+
+    if (typeof obj === 'string') {
+        // Base64 encoded buffer — rejesha Buffer
+        // Baileys inaweza kuhifadhi baadhi ya keys kama base64
+        return obj;
+    }
 
     if (Array.isArray(obj)) {
         return obj.map(reviveBuffers);
     }
 
     if (typeof obj === 'object') {
+        // { type: 'Buffer', data: [...] } — format ya JSON.stringify(Buffer)
         if (obj.type === 'Buffer' && Array.isArray(obj.data)) {
             return Buffer.from(obj.data);
         }
@@ -44,10 +52,18 @@ function reviveBuffers(obj) {
     return obj;
 }
 
+// ✅ Badilisha Buffer kuwa Base64 kabla ya kuhifadhi kwenye JSONB
+// Hii inafanya data iwe stable zaidi kuliko { type:'Buffer', data:[...] }
+function replacer(key, value) {
+    if (Buffer.isBuffer(value)) {
+        return { type: 'Buffer', data: [...value] };
+    }
+    return value;
+}
+
 export async function initializeDatabase() {
     const client = await getPool().connect();
     try {
-        // ✅ Migration: kama table ipo lakini haina column 'state', drop na uunde upya
         await client.query(`
             DO $$
             BEGIN
@@ -101,12 +117,14 @@ async function loadState(sessionId) {
 async function saveState(sessionId, stateData) {
     const client = await getPool().connect();
     try {
+        // ✅ Tumia JSON.stringify na replacer ili Buffer zihifadhiwe vizuri
+        const serialized = JSON.parse(JSON.stringify(stateData, replacer));
         await client.query(
             `INSERT INTO wa_sessions (session_id, state, updated_at)
              VALUES ($1, $2, NOW())
              ON CONFLICT (session_id) DO UPDATE
              SET state = EXCLUDED.state, updated_at = NOW()`,
-            [sessionId, stateData]
+            [sessionId, serialized]
         );
     } catch (err) {
         console.error('[session-db] Save error:', err.message);
@@ -143,7 +161,7 @@ export async function deleteAllSessions() {
 export async function usePostgresAuthState(sessionId) {
     const fullState = await loadState(sessionId);
 
-    // ✅ reviveBuffers — rejesha Buffer zilizobadilishwa na JSONB serialize
+    // ✅ reviveBuffers — rejesha Buffer kutoka JSONB
     const creds = reviveBuffers(fullState?.creds) || initAuthCreds();
     let keysStore = reviveBuffers(fullState?.keys) || {};
 
@@ -181,7 +199,7 @@ export async function usePostgresAuthState(sessionId) {
 
     const keys = makeCacheableSignalKeyStore(keyStore, logger);
 
-    // ✅ saveCreds iliyoboreshwa
+    // ✅ saveCreds inakubali update na kufanya Object.assign
     const saveCreds = async (update) => {
         if (update && typeof update === 'object') {
             Object.assign(creds, update);
