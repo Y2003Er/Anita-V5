@@ -1,4 +1,4 @@
-// session-db.js – FIXED VERSION (base64 serialization, single table)
+// session-db.js – Fully compatible with Baileys v7 (^7.0.0-rc13)
 'use strict';
 
 const { Pool } = require('pg');
@@ -125,14 +125,27 @@ async function deleteSession(sessionId) {
     }
 }
 
-// ========== Main auth state for Baileys ==========
+// ========== Helper to deserialize app-state-sync-key (v7 compatible) ==========
+function deserializeAppStateSyncKey(data) {
+    // Try different possible paths in v7
+    if (proto.Message?.AppStateSyncKeyData?.fromObject) {
+        return proto.Message.AppStateSyncKeyData.fromObject(data);
+    }
+    if (proto.AppStateSyncKeyData?.fromObject) {
+        return proto.AppStateSyncKeyData.fromObject(data);
+    }
+    // Fallback: return raw data (may still work)
+    return data;
+}
+
+// ========== Main auth state for Baileys (v7) ==========
 async function usePostgresAuthState(sessionId) {
     // Try to load existing session
     let session = await loadSession(sessionId);
     let creds = session ? session.creds : initAuthCreds();
     let keysStore = session ? session.keys : {};
 
-    // Build keys interface expected by Baileys
+    // Build keys interface expected by Baileys v7
     const keys = {
         get: async (type, ids) => {
             const result = {};
@@ -141,8 +154,8 @@ async function usePostgresAuthState(sessionId) {
                 const val = keysStore[key];
                 if (val !== undefined) {
                     if (type === 'app-state-sync-key') {
-                        // Convert plain object back to proto
-                        result[id] = proto.Message.AppStateSyncKeyData.fromObject(val);
+                        // v7 requires deserialization to proto object
+                        result[id] = deserializeAppStateSyncKey(val);
                     } else {
                         result[id] = val;
                     }
@@ -151,7 +164,6 @@ async function usePostgresAuthState(sessionId) {
             return result;
         },
         set: async (data) => {
-            // data is like { 'pre-key': { '1': {...} }, 'session': { ... } }
             let changed = false;
             for (const [type, entries] of Object.entries(data)) {
                 if (!entries) continue;
@@ -163,7 +175,15 @@ async function usePostgresAuthState(sessionId) {
                             changed = true;
                         }
                     } else {
-                        keysStore[key] = value;
+                        // Serialize proto objects to plain JSON-safe structure
+                        let toStore = value;
+                        if (type === 'app-state-sync-key' && value && typeof value.toJSON === 'function') {
+                            toStore = value.toJSON();
+                        } else if (type === 'app-state-sync-key' && value && typeof value === 'object') {
+                            // Already plain object – keep as is
+                            toStore = value;
+                        }
+                        keysStore[key] = toStore;
                         changed = true;
                     }
                 }
