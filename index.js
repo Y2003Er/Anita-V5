@@ -11,11 +11,14 @@ import {
 
 import './config.js';
 import { loadCommands, handleMessage, setupContactListener } from './lib/handler.js';
-import { initializeDatabase, usePostgresAuthState, deleteSession } from './session-db.js';
+import { initializeDatabase, usePostgresAuthState, deleteSession, deleteAllSessions } from './session-db.js';
 
 const logger = pino({ level: 'info' });
 const PHONE_NUMBER = process.env.PHONE_NUMBER?.trim();
 const SESSION_ID = process.env.SESSION_ID || 'queen_anita_v5';
+
+// Clean start if CLEAN_SESSIONS=true
+const CLEAN_SESSIONS = process.env.CLEAN_SESSIONS === 'true';
 
 const log = {
     info:    (msg) => console.log(`  ✦  ${msg}`),
@@ -77,10 +80,9 @@ async function startBot() {
     clearOpenTimer();
 
     try {
-        loadCommands();
+        await loadCommands();       // make sure loadCommands is async (already is)
         log.success('Commands zimepakiwa.');
 
-        // PostgreSQL auth state (JSONB, imerekebishwa kwa v7)
         const { state, saveCreds } = await usePostgresAuthState(SESSION_ID);
         const msgRetryCounterCache = new NodeCache();
 
@@ -114,7 +116,6 @@ async function startBot() {
             const { connection, lastDisconnect } = update;
             if (connection) log.state(`Connection  →  ${connection}`);
 
-            // Baileys v7 hutumia state.creds?.account (si .me)
             const isRegistered = !!state.creds?.account;
             if (!pairingRequested && !isRegistered && connection === 'connecting') {
                 pairingRequested = true;
@@ -162,7 +163,6 @@ async function startBot() {
             }
         });
 
-        // Message handler
         sock.ev.on('messages.upsert', async ({ messages, type }) => {
             if (type !== 'notify') return;
             const msg = messages[0];
@@ -195,11 +195,18 @@ async function startBot() {
     }
 }
 
-// Anza kwa kuinitialize database kisha start bot
 (async () => {
     try {
         log.info('Inaunganika na PostgreSQL...');
         await initializeDatabase();
+
+        // 🧹 Clean start: delete all sessions if requested
+        if (CLEAN_SESSIONS) {
+            log.warn('🧹 CLEAN_SESSIONS=true – Inafuta session zote kwenye database...');
+            await deleteAllSessions();
+            log.success('Session zote zimefutwa. Bot itaomba pairing code upya.');
+        }
+
         log.blank();
         await startBot();
     } catch (err) {
