@@ -111,9 +111,7 @@ async function startBot() {
         });
 
         // ✅ await saveCreds ili DB isave kabla ya kitu kingine kutokea
-        sock.ev.on('creds.update', async (update) => {
-            await saveCreds(update);
-        });
+        sock.ev.on('creds.update', saveCreds);
 
         setupContactListener(sock);
 
