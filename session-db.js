@@ -3,7 +3,7 @@ import { Pool } from 'pg';
 import pino from 'pino';
 import { initAuthCreds, makeCacheableSignalKeyStore } from '@whiskeysockets/baileys';
 
-const logger = pino({ level: 'silent' }); // silent – haioneshi noise ya ziada
+const logger = pino({ level: 'silent' });
 
 let pool = null;
 
@@ -19,6 +19,29 @@ function getPool() {
     });
     pool.on('error', (err) => console.error('[DB] Pool error:', err.message));
     return pool;
+}
+
+// ✅ Rejesha Buffer kutoka JSONB — PostgreSQL inabadilisha Buffer kuwa { type: 'Buffer', data: [...] }
+function reviveBuffers(obj) {
+    if (obj == null) return obj;
+
+    if (Array.isArray(obj)) {
+        return obj.map(reviveBuffers);
+    }
+
+    if (typeof obj === 'object') {
+        if (obj.type === 'Buffer' && Array.isArray(obj.data)) {
+            return Buffer.from(obj.data);
+        }
+
+        const result = {};
+        for (const [key, value] of Object.entries(obj)) {
+            result[key] = reviveBuffers(value);
+        }
+        return result;
+    }
+
+    return obj;
 }
 
 export async function initializeDatabase() {
@@ -66,7 +89,7 @@ async function loadState(sessionId) {
             [sessionId]
         );
         if (res.rows.length === 0) return null;
-        return res.rows[0].state; // { creds, keys }
+        return res.rows[0].state;
     } catch (err) {
         console.error('[session-db] Load error:', err.message);
         return null;
@@ -120,9 +143,9 @@ export async function deleteAllSessions() {
 export async function usePostgresAuthState(sessionId) {
     const fullState = await loadState(sessionId);
 
-    // ✅ creds ni live object – inabadilika moja kwa moja
-    const creds = fullState?.creds || initAuthCreds();
-    let keysStore = fullState?.keys || {};
+    // ✅ reviveBuffers — rejesha Buffer zilizobadilishwa na JSONB serialize
+    const creds = reviveBuffers(fullState?.creds) || initAuthCreds();
+    let keysStore = reviveBuffers(fullState?.keys) || {};
 
     const keyStore = {
         get: async (type, ids) => {
@@ -156,17 +179,17 @@ export async function usePostgresAuthState(sessionId) {
         },
     };
 
-    // ✅ Logger halisi badala ya null
     const keys = makeCacheableSignalKeyStore(keyStore, logger);
 
-    // ✅ saveCreds inakubali update kutoka Baileys na kuifanya Object.assign
+    // ✅ saveCreds iliyoboreshwa
     const saveCreds = async (update) => {
-        if (update) Object.assign(creds, update);
+        if (update && typeof update === 'object') {
+            Object.assign(creds, update);
+        }
         await saveState(sessionId, { creds, keys: keysStore });
-        console.log(`[session-db] Creds updated & saved.`);
+        console.log('[session-db] Creds updated & saved.');
     };
 
-    // ✅ state.creds ni live reference – inabadilika bila kusoma upya
     const state = { creds, keys };
 
     return { state, saveCreds };
