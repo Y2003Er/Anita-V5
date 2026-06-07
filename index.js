@@ -23,7 +23,7 @@ require('./config');
 // Load command handler
 const { loadCommands, handleMessage, setupContactListener } = require('./lib/handler');
 
-const logger = pino({ level: 'silent' });
+const logger = pino({ level: 'info' });
 
 const SESSION_ID   = process.env.SESSION_ID || 'queen_anita_v5';
 const PHONE_NUMBER = process.env.PHONE_NUMBER?.trim();
