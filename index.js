@@ -188,11 +188,18 @@ async function startBot() {
             }
         });
 
+        // ✅ FIXED: messages.upsert with log to show incoming messages
         sock.ev.on('messages.upsert', async ({ messages, type }) => {
             if (type !== 'notify') return;
             const msg = messages[0];
             if (!msg.message) return;
             if (msg.key.fromMe) return;
+
+            // Extract text for logging
+            const text = msg.message?.conversation ||
+                         msg.message?.extendedTextMessage?.text ||
+                         '[non-text message]';
+            console.log(`📩 Ujumbe kutoka ${msg.key.remoteJid}: ${text}`);
 
             await handleMessage(sock, msg);
         });
