@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "@whiskeysockets/baileys": "^7.0.0-rc13",
+    "node-cache": "^5.1.2",
     "pg": "^8.11.5",
     "dotenv": "^16.3.1",
     "chalk": "^4.1.2",
