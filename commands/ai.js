@@ -1,6 +1,7 @@
 'use strict';
 require('dotenv').config();
 const { Pool } = require('pg');
+const { downloadContentFromMessage } = require('@whiskeysockets/baileys');
 
 const GROQ_API_KEY   = process.env.GROQ_API_KEY;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
@@ -31,7 +32,7 @@ async function getHistory(userId) {
 async function addHistory(userId, msg) {
     const history = await getHistory(userId);
     history.push(msg);
-    const trimmed = history.slice(-20); // hifadhi 20 za mwisho
+    const trimmed = history.slice(-20); // keep last 20
     await pool.query(`
         INSERT INTO ai_memory (user_id, history) VALUES ($1, $2)
         ON CONFLICT (user_id) DO UPDATE SET history = $2
@@ -104,25 +105,24 @@ Usitumie markdown nyingi — tumia bold (*neno*) tu pale inapohitajika.`;
 // =====================
 // 🖼️ PHOTO EDITOR
 // =====================
-async function handlePhoto(sock, msg, from, text, safeSend) {
+async function handlePhoto(sock, msg, from, commandText) {
     let sharp;
     try { sharp = require('sharp'); } catch {
-        return safeSend(sock, from, {
-            text: '❌ sharp haipo — run: npm install sharp'
-        }, { quoted: msg });
+        await sock.sendMessage(from, { text: '❌ sharp haipo — run: npm install sharp' }, { quoted: msg });
+        return true;
     }
 
     const imageMsg = msg.message?.imageMessage ||
                      msg.message?.extendedTextMessage?.contextInfo?.quotedMessage?.imageMessage;
 
     if (!imageMsg) {
-        return safeSend(sock, from, {
+        await sock.sendMessage(from, {
             text: '📸 Tuma picha pamoja na command:\n*.photo blur* — blur\n*.photo gray* — grayscale\n*.photo rotate* — rotate 90°\n*.photo enhance* — resize/sharpen'
         }, { quoted: msg });
+        return true;
     }
 
-    const type = text.replace('.photo', '').trim().toLowerCase() || 'enhance';
-    const { downloadContentFromMessage } = require('@whiskeysockets/baileys');
+    const type = commandText.replace('.photo', '').trim().toLowerCase() || 'enhance';
 
     try {
         const stream = await downloadContentFromMessage(imageMsg, 'image');
@@ -135,49 +135,59 @@ async function handlePhoto(sock, msg, from, text, safeSend) {
         else if (type === 'rotate')  processed = await sharp(buffer).rotate(90).toBuffer();
         else                         processed = await sharp(buffer).resize(900).sharpen().toBuffer();
 
-        await safeSend(sock, from, {
+        await sock.sendMessage(from, {
             image: processed,
             caption: `🖼️ Edited: *${type}*`
         }, { quoted: msg });
 
     } catch (e) {
         console.error('Photo edit error:', e.message);
-        await safeSend(sock, from, { text: '❌ Photo edit imeshindwa' }, { quoted: msg });
+        await sock.sendMessage(from, { text: '❌ Photo edit imeshindwa' }, { quoted: msg });
     }
 
     return true;
 }
 
 // =====================
-// 🚀 MAIN COMMAND
+// 🚀 MAIN COMMAND (handler compatible)
 // =====================
 module.exports = {
     name: 'ai',
     description: 'AI Assistant + Photo Editor (.ai, .bot, .photo)',
 
-    async execute({ sock, msg, from, sender, text, safeSend }) {
-        if (!text) return false;
+    async execute(sock, msg, args) {
+        // Extract info from message
+        const from = msg.key.remoteJid;               // chat ID (group or private)
+        const sender = msg.key.participant || from;   // actual sender (LID)
+        const fullText = (msg.message?.conversation ||
+                          msg.message?.extendedTextMessage?.text ||
+                          '').trim();
+        
+        if (!fullText) return false;
 
-        // 🖼️ Photo editor
-        if (text.startsWith('.photo')) {
-            return await handlePhoto(sock, msg, from, text, safeSend);
+        // 🖼️ Photo editor command
+        if (fullText.startsWith('.photo')) {
+            return await handlePhoto(sock, msg, from, fullText);
         }
 
-        // 🤖 AI
-        if (!text.startsWith('.ai') && !text.startsWith('.bot')) return false;
+        // 🤖 AI command
+        if (!fullText.startsWith('.ai') && !fullText.startsWith('.bot')) return false;
 
-        const query = text.replace(/^\.(ai|bot)\s*/i, '').trim();
+        const query = fullText.replace(/^\.(ai|bot)\s*/i, '').trim();
 
         if (!query) {
-            return safeSend(sock, from, {
+            await sock.sendMessage(from, {
                 text: '💬 Tumia: .ai swali lako\nMfano: .ai habari za leo Tanzania?'
             }, { quoted: msg });
+            return true;
         }
 
+        // Send typing indicator
         await sock.sendPresenceUpdate('composing', from).catch(() => {});
 
+        // Load history for this user
         let history = [];
-        try { history = await getHistory(sender); } catch {}
+        try { history = await getHistory(sender); } catch (e) {}
 
         const messages = [
             { role: 'system', content: SYSTEM },
@@ -189,20 +199,21 @@ module.exports = {
             const reply = await aiRouter(messages);
             if (!reply) throw new Error('Jibu tupu');
 
-            try {
-                await addHistory(sender, { role: 'user', content: query });
-                await addHistory(sender, { role: 'assistant', content: reply });
-            } catch {}
+            // Save to memory (async, don't await to avoid delay)
+            addHistory(sender, { role: 'user', content: query }).catch(console.error);
+            addHistory(sender, { role: 'assistant', content: reply }).catch(console.error);
 
-            return safeSend(sock, from, {
+            await sock.sendMessage(from, {
                 text: `🤖 *26 Tech AI*\n\n${reply}`
             }, { quoted: msg });
 
         } catch (err) {
             console.error('AI error:', err.message);
-            return safeSend(sock, from, {
+            await sock.sendMessage(from, {
                 text: `❌ AI imeshindwa: ${err.message}`
             }, { quoted: msg });
         }
+
+        return true;
     }
 };
