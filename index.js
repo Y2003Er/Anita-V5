@@ -123,7 +123,7 @@ async function startBot() {
             logger,
             printQRInTerminal: false,
             browser: ['Ubuntu', 'Chrome', '120.0.0'],
-            connectTimeoutMs: 90000,
+            connectTimeoutMs: 120000,
             keepAliveIntervalMs: 30000,
             shouldSyncHistoryMessage: () => false,
             defaultQueryTimeoutMs: undefined,
