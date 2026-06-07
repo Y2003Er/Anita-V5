@@ -1,4 +1,5 @@
 // session-db.js – Fully compatible with Baileys v7 (^7.0.0-rc13)
+// Fixes decryption errors by properly storing all key types (including sender-key)
 'use strict';
 
 const { Pool } = require('pg');
@@ -20,13 +21,20 @@ function getPool() {
     return pool;
 }
 
-// ========== Serialization helpers (Buffer <-> base64) ==========
+// ========== Robust Serialization (handles Buffers & Proto objects) ==========
 function toSerializable(obj) {
+    if (obj === null || obj === undefined) return obj;
     if (Buffer.isBuffer(obj)) {
         return { __type: 'Buffer', data: obj.toString('base64') };
     }
-    if (obj && typeof obj === 'object') {
-        if (Array.isArray(obj)) return obj.map(toSerializable);
+    // Handle proto objects that have toJSON method
+    if (typeof obj.toJSON === 'function') {
+        return toSerializable(obj.toJSON());
+    }
+    if (Array.isArray(obj)) {
+        return obj.map(v => toSerializable(v));
+    }
+    if (typeof obj === 'object') {
         const copy = {};
         for (const [k, v] of Object.entries(obj)) {
             copy[k] = toSerializable(v);
@@ -37,19 +45,24 @@ function toSerializable(obj) {
 }
 
 function fromSerializable(obj) {
-    if (obj && typeof obj === 'object') {
+    if (obj === null || obj === undefined) return obj;
+    if (typeof obj === 'object') {
         if (obj.__type === 'Buffer' && typeof obj.data === 'string') {
             return Buffer.from(obj.data, 'base64');
         }
-        if (Array.isArray(obj)) return obj.map(fromSerializable);
-        for (const k in obj) {
-            obj[k] = fromSerializable(obj[k]);
+        if (Array.isArray(obj)) {
+            return obj.map(v => fromSerializable(v));
         }
+        const copy = {};
+        for (const [k, v] of Object.entries(obj)) {
+            copy[k] = fromSerializable(v);
+        }
+        return copy;
     }
     return obj;
 }
 
-// ========== Initialize table (single row per session) ==========
+// ========== Initialize table ==========
 async function initializeDatabase() {
     const client = await getPool().connect();
     try {
@@ -71,7 +84,7 @@ async function initializeDatabase() {
     }
 }
 
-// ========== Load session from DB ==========
+// ========== Load session ==========
 async function loadSession(sessionId) {
     const client = await getPool().connect();
     try {
@@ -91,7 +104,7 @@ async function loadSession(sessionId) {
     }
 }
 
-// ========== Save or update session ==========
+// ========== Save session ==========
 async function saveSession(sessionId, creds, keys) {
     const client = await getPool().connect();
     try {
@@ -125,27 +138,24 @@ async function deleteSession(sessionId) {
     }
 }
 
-// ========== Helper to deserialize app-state-sync-key (v7 compatible) ==========
+// ========== Helper to deserialize app-state-sync-key (v7) ==========
 function deserializeAppStateSyncKey(data) {
-    // Try different possible paths in v7
     if (proto.Message?.AppStateSyncKeyData?.fromObject) {
         return proto.Message.AppStateSyncKeyData.fromObject(data);
     }
     if (proto.AppStateSyncKeyData?.fromObject) {
         return proto.AppStateSyncKeyData.fromObject(data);
     }
-    // Fallback: return raw data (may still work)
+    // Last resort: assume it's already a proper object
     return data;
 }
 
-// ========== Main auth state for Baileys (v7) ==========
+// ========== Main auth state for Baileys v7 ==========
 async function usePostgresAuthState(sessionId) {
-    // Try to load existing session
     let session = await loadSession(sessionId);
     let creds = session ? session.creds : initAuthCreds();
     let keysStore = session ? session.keys : {};
 
-    // Build keys interface expected by Baileys v7
     const keys = {
         get: async (type, ids) => {
             const result = {};
@@ -154,9 +164,9 @@ async function usePostgresAuthState(sessionId) {
                 const val = keysStore[key];
                 if (val !== undefined) {
                     if (type === 'app-state-sync-key') {
-                        // v7 requires deserialization to proto object
                         result[id] = deserializeAppStateSyncKey(val);
                     } else {
+                        // For all other types (pre-key, session, sender-key, etc.)
                         result[id] = val;
                     }
                 }
@@ -175,13 +185,13 @@ async function usePostgresAuthState(sessionId) {
                             changed = true;
                         }
                     } else {
-                        // Serialize proto objects to plain JSON-safe structure
+                        // Convert any proto object to plain JSON-serializable form
                         let toStore = value;
-                        if (type === 'app-state-sync-key' && value && typeof value.toJSON === 'function') {
+                        if (value && typeof value.toJSON === 'function') {
                             toStore = value.toJSON();
-                        } else if (type === 'app-state-sync-key' && value && typeof value === 'object') {
-                            // Already plain object – keep as is
-                            toStore = value;
+                        } else if (value && typeof value === 'object') {
+                            // Already plain object – but we need to ensure nested Buffers are handled
+                            toStore = toSerializable(value);
                         }
                         keysStore[key] = toStore;
                         changed = true;
