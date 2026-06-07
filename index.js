@@ -13,7 +13,7 @@ import './config.js';
 import { loadCommands, handleMessage, setupContactListener } from './lib/handler.js';
 import { initializeDatabase, usePostgresAuthState, deleteSession, deleteAllSessions } from './session-db.js';
 
-const logger = pino({ level: 'silent' });
+const logger = pino({ level: 'info' });
 const PHONE_NUMBER = process.env.PHONE_NUMBER?.trim();
 const SESSION_ID = process.env.SESSION_ID || 'queen_anita_v5';
 
