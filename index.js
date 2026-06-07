@@ -17,6 +17,10 @@ const {
     deleteSession,
 } = require('./session-db');
 
+require('./config');
+
+const { loadCommands, handleMessage, handleAntiDelete, cacheMessage, setupContactListener } = require('./lib/handler');
+
 const logger = pino({ level: 'silent' });
 
 const SESSION_ID   = process.env.SESSION_ID || 'queen_anita_v5';
@@ -92,11 +96,13 @@ async function startBot() {
     clearOpenTimer();
 
     try {
-        // Pata auth state kutoka PostgreSQL
+        // Load commands before starting
+        loadCommands();
+        log.success('Commands zimepakiwa.');
+
         const { state, saveCreds } = await usePostgresAuthState(SESSION_ID);
         const { version } = await fetchLatestBaileysVersion();
 
-        // Funga socket ya zamani
         if (sock) {
             try { sock.ev.removeAllListeners(); sock.ws?.close(); } catch {}
             sock = null;
@@ -116,13 +122,13 @@ async function startBot() {
         });
 
         sock.ev.on('creds.update', saveCreds);
+        setupContactListener(sock);
 
         sock.ev.on('connection.update', async (update) => {
             const { connection, lastDisconnect } = update;
             if (connection) log.state(`Connection  →  ${connection}`);
 
-            // ── Omba pairing code (kwa session mpya tu) ──
-            // HAPA NDIO LOGIC YA start.js: setTimeout 3s, pairingRequested, na connection !== 'close'
+            // SIMPLE PAIRING FLOW: request after 3 seconds if not registered
             if (!pairingRequested && !state.creds.registered && connection !== 'close') {
                 setTimeout(async () => {
                     if (pairingRequested) return;
@@ -135,10 +141,9 @@ async function startBot() {
                         log.error(`Pairing code imeshindwa: ${err.message}`);
                         pairingRequested = false;
                     }
-                }, 3000); // ← sekunde 3 kama start.js
+                }, 3000);
             }
 
-            // ── Imefunguka ──
             if (connection === 'open') {
                 clearOpenTimer();
                 log.div();
@@ -149,7 +154,6 @@ async function startBot() {
                 bootLock     = false;
             }
 
-            // ── Imevunjika ──
             if (connection === 'close') {
                 clearOpenTimer();
                 const code = lastDisconnect?.error?.output?.statusCode;
@@ -174,7 +178,20 @@ async function startBot() {
             }
         });
 
-        // Timeout - dakika 3
+        // ── Message handlers ──
+        sock.ev.on('messages.upsert', async ({ messages, type }) => {
+            if (type !== 'notify') return;
+            const msg = messages[0];
+            if (!msg?.message) return;
+            cacheMessage(msg);
+            if (msg.key.remoteJid === 'status@broadcast') return;
+            await handleMessage(sock, msg);
+        });
+
+        sock.ev.on('messages.update', (updates) => {
+            handleAntiDelete(sock, updates);
+        });
+
         openTimer = setTimeout(() => {
             log.warn('Muda umekwisha (3 min) — Itaanzisha upya...');
             isConnecting = false;
