@@ -159,9 +159,11 @@ export async function usePostgresAuthState(sessionId) {
     // ✅ Logger halisi badala ya null
     const keys = makeCacheableSignalKeyStore(keyStore, logger);
 
-    const saveCreds = async () => {
+    // ✅ saveCreds inakubali update kutoka Baileys na kuifanya Object.assign
+    const saveCreds = async (update) => {
+        if (update) Object.assign(creds, update);
         await saveState(sessionId, { creds, keys: keysStore });
-        console.log('[session-db] Creds updated & saved.');
+        console.log(`[session-db] Creds updated & saved.`);
     };
 
     // ✅ state.creds ni live reference – inabadilika bila kusoma upya
